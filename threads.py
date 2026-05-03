@@ -83,105 +83,129 @@ class FundDataFetcher(QThread):
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
         })
 
-        for i, code in enumerate(self.fund_codes):
-            if self.isInterruptionRequested(): break
+    def fetch_single(self, code, session):
+        if self.isInterruptionRequested(): return None
+        
+        saved_name = self.config.get("funds_info", {}).get(code, {}).get("name", "")
+        if not saved_name:
+            saved_name = self.code_to_name_dict.get(code, code)
             
-            saved_name = self.config.get("funds_info", {}).get(code, {}).get("name", "")
-            if not saved_name:
-                saved_name = self.code_to_name_dict.get(code, code)
+        data = {'fundcode': code, 'name': saved_name}
+        
+        # ================= 1. 优先获取历史净值数据 =================
+        his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=600&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+        history_success = False
+        
+        try:
+            r_his = session.get(his_url, timeout=5)
+            his_data = r_his.json()
+            navs = []
+            
+            if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
+                for item in his_data.get("Datas"):
+                    try:
+                        val = item.get("DWJZ")
+                        if val: navs.append(float(val))
+                    except ValueError: pass
                 
-            data = {'fundcode': code, 'name': saved_name}
-            
-            # ================= 1. 优先获取历史净值数据 =================
-            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=600&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
-            history_success = False
-            
-            try:
-                r_his = session.get(his_url, timeout=5)
-                his_data = r_his.json()
-                navs = []
-                
-                if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
-                    for item in his_data.get("Datas"):
-                        try:
-                            val = item.get("DWJZ")
-                            if val: navs.append(float(val))
-                        except ValueError: pass
+                if navs:
+                    latest_item = his_data.get("Datas")[0]
+                    latest_date = latest_item.get("FSRQ", "")
                     
-                    if navs:
-                        latest_item = his_data.get("Datas")[0]
-                        latest_date = latest_item.get("FSRQ", "")
-                        
-                        data['new_history'] = {'jzrq': latest_date, 'navs': navs}
-                        self.history_cache[code] = data['new_history']
-                        
-                        data['jzrq'] = latest_date
-                        data['dwjz'] = latest_item.get("DWJZ", "")
-                        data['gsz'] = latest_item.get("DWJZ", "")
-                        data['gszzl'] = latest_item.get("JZZZL", "")
-                        data['gztime'] = f"{latest_date} (实际净值)"
-                        history_success = True
-            except Exception:
-                pass
-
-            # ================= 2. 尝试获取实时估值数据 =================
-            timestamp = int(time.time() * 1000)
-            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={timestamp}"
-            
-            try:
-                response = session.get(url, timeout=3)
-                if response.status_code == 200:
-                    match = re.search(r'jsonpgz\((.*?)\);', response.text)
-                    if match:
-                        gz_data = json.loads(match.group(1))
-                        if gz_data.get('name'):
-                            data['name'] = gz_data.get('name')
-                        
-                        if gz_data.get('gsz'):
-                            data['jzrq'] = gz_data.get('jzrq', data.get('jzrq'))
-                            data['dwjz'] = gz_data.get('dwjz', data.get('dwjz'))
-                            data['gsz'] = gz_data.get('gsz')
-                            data['gszzl'] = gz_data.get('gszzl')
-                            data['gztime'] = gz_data.get('gztime')
-            except Exception:
-                pass
-
-            if not history_success and 'gsz' not in data:
-                self.error_signal.emit(code, "暂无数据")
-                continue
-
-            # ================= 3. 计算涨跌幅与百分位 =================
-            try:
-                current_val = float(data.get('gsz', data.get('dwjz', 0)))
-                history_navs = self.history_cache.get(code, {}).get('navs', [])
-                
-                if history_navs:
-                    full_navs = [current_val] + history_navs 
+                    data['new_history'] = {'jzrq': latest_date, 'navs': navs}
+                    self.history_cache[code] = data['new_history']
                     
-                    data['drops'] = {}
-                    for d in self.config.get('drop_days', []):
-                        if len(full_navs) > d:
-                            base_nav = full_navs[d]
-                            if base_nav != 0:
-                                drop = (current_val - base_nav) / base_nav * 100
-                                data['drops'][d] = drop
-                            
-                    data['pcts'] = {}
-                    for m in self.config.get('percentile_months', []):
-                        days = m * 21
-                        sub_navs = full_navs[:days + 1]
-                        if len(sub_navs) > 1:
-                            max_v, min_v = max(sub_navs), min(sub_navs)
-                            if max_v == min_v: pct = 100.0
-                            else: pct = (current_val - min_v) / (max_v - min_v) * 100
-                            data['pcts'][m] = pct
-            except Exception: 
-                pass
-                
-            self.update_signal.emit(data)
+                    data['jzrq'] = latest_date
+                    data['dwjz'] = latest_item.get("DWJZ", "")
+                    data['gsz'] = latest_item.get("DWJZ", "")
+                    data['gszzl'] = latest_item.get("JZZZL", "")
+                    data['gztime'] = f"{latest_date} (实际净值)"
+                    history_success = True
+        except Exception:
+            pass
 
-            if i < len(self.fund_codes) - 1:
-                time.sleep(random.uniform(0.1, 0.3)) 
+        # ================= 2. 尝试获取实时估值数据 =================
+        timestamp = int(time.time() * 1000)
+        url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={timestamp}"
+        
+        try:
+            response = session.get(url, timeout=3)
+            if response.status_code == 200:
+                match = re.search(r'jsonpgz\((.*?)\);', response.text)
+                if match:
+                    gz_data = json.loads(match.group(1))
+                    if gz_data.get('name'):
+                        data['name'] = gz_data.get('name')
+                    
+                    if gz_data.get('gsz'):
+                        data['jzrq'] = gz_data.get('jzrq', data.get('jzrq'))
+                        data['dwjz'] = gz_data.get('dwjz', data.get('dwjz'))
+                        data['gsz'] = gz_data.get('gsz')
+                        data['gszzl'] = gz_data.get('gszzl')
+                        data['gztime'] = gz_data.get('gztime')
+        except Exception:
+            pass
+
+        if not history_success and 'gsz' not in data:
+            return {'error': True, 'code': code, 'msg': "暂无数据"}
+
+        # ================= 3. 计算涨跌幅与百分位 =================
+        try:
+            current_val = float(data.get('gsz', data.get('dwjz', 0)))
+            history_navs = self.history_cache.get(code, {}).get('navs', [])
+            
+            if history_navs:
+                full_navs = [current_val] + history_navs 
+                
+                data['drops'] = {}
+                for d in self.config.get('drop_days', []):
+                    if len(full_navs) > d:
+                        base_nav = full_navs[d]
+                        if base_nav != 0:
+                            drop = (current_val - base_nav) / base_nav * 100
+                            data['drops'][d] = drop
+                        
+                data['pcts'] = {}
+                for m in self.config.get('percentile_months', []):
+                    days = m * 21
+                    sub_navs = full_navs[:days + 1]
+                    if len(sub_navs) > 1:
+                        max_v, min_v = max(sub_navs), min(sub_navs)
+                        if max_v == min_v: pct = 100.0
+                        else: pct = (current_val - min_v) / (max_v - min_v) * 100
+                        data['pcts'][m] = pct
+        except Exception: 
+            pass
+            
+        return {'error': False, 'data': data}
+
+    def run(self):
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
+        })
+
+        import concurrent.futures
+        
+        # 使用最大10个线程进行并发请求
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_code = {executor.submit(self.fetch_single, code, session): code for code in self.fund_codes}
+            
+            for future in concurrent.futures.as_completed(future_to_code):
+                if self.isInterruptionRequested():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                    
+                try:
+                    res = future.result()
+                    if not res: continue
+                    if res.get('error'):
+                        self.error_signal.emit(res['code'], res['msg'])
+                    else:
+                        self.update_signal.emit(res['data'])
+                except Exception as e:
+                    code = future_to_code[future]
+                    self.error_signal.emit(code, str(e))
                 
         session.close()
         self.finish_signal.emit()
