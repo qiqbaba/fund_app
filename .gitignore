@@ -1,0 +1,9 @@
+# Python 编译缓存
+__pycache__/
+*.pyc
+
+# 旧的临时数据文件（代码未引用）
+high_pe.json
+history_pe.json
+index_funds.json
+output.json
