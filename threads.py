@@ -49,8 +49,23 @@ class RankingFetcher(QThread):
             '基建', '环保', '纳斯达克', '纳指', '标普', '恒生科技', '恒生', '沪深300', '中证500', 
             '中证1000', '中证2000', 'A500', '上证50', '红利', '科创50', '科创100', '创业板', 
             '信创', '软件', '计算机', '人工智能', 'AI', '大数据', '云计算', '通信', '5G', '机械', 
-            '化工', '旅游', '家电', '微盘', '物联网'
+            '化工', '旅游', '家电', '微盘', '物联网',
+            '互联网', '科技', '碳中和', '原油', '石油', '天然气', '能源', '稀土', '锂', 
+            '酒', '猪肉', '畜牧', '电力', '水利', '交通运输', '物流', '航空', '船舶',
+            '保险', '期货', '基本面', '价值', '成长', '深证', '上证', '中证A', 
+            '机器人', '无人驾驶', '智能', '数字经济', '数据要素', '网络安全', '信息安全',
+            '港股', '日经', '德国', '法国', '越南', '印度', '东南亚', '亚太'
         ]
+        
+        # 基金公司前缀清理列表
+        company_prefixes = (
+            '华夏|易方达|广发|富国|招商|嘉实|南方|博时|鹏华|汇添富|天弘|华安|国泰|银华|'
+            '工银|建信|交银|景顺长城|景顺|中欧|华宝|大成|前海开源|国联安|兴银|永赢|中银|'
+            '万家|中融|国金|平安|浦银安盛|长城|长信|长盛|东方|方正富邦|海富通|华泰柏瑞|'
+            '华泰|汇安|金鹰|民生加银|民生|农银汇理|农银|诺安|诺德|融通|上投摩根|上投|'
+            '泰达宏利|泰达|泰康|西部利得|西部|信达澳亚|信达澳银|信达|兴全|兴业|'
+            '鑫元|银河|英大|圆信永丰|招商|中海|中加|中金|中信保诚|中信建投|中信|中邮'
+        )
         
         result = []
         seen_sectors = set()
@@ -63,14 +78,26 @@ class RankingFetcher(QThread):
             if not name: continue
             
             matched_sector = None
+            # 第一轮：直接用关键词匹配基金全名
             for kw in keywords:
                 if kw in name:
                     matched_sector = kw
                     break
             
+            # 第二轮：清理后再匹配关键词（去掉公司名和指数系列前缀）
             if not matched_sector:
                 clean_name = re.sub(r'(ETF|LOF|联接|发起式|指数|增强|型|证券投资基金|[A-E]\b|\d+).*$', '', name)
-                clean_name = re.sub(r'^(华夏|易方达|广发|富国|招商|嘉实|南方|博时|鹏华|汇添富|天弘|华安|国泰|银华|工银|建信|交银|景顺|中欧|华宝|大成|前海开源|国联安)', '', clean_name)
+                clean_name = re.sub(r'^(' + company_prefixes + ')', '', clean_name)
+                clean_name = re.sub(r'^(中证|国证|上证|深证|港股通|CES|CS|MSCI|标普)', '', clean_name)
+                clean_name = clean_name.strip()
+                
+                for kw in keywords:
+                    if kw in clean_name:
+                        matched_sector = kw
+                        break
+            
+            # 第三轮：取清理后名称的前4个字作为板块
+            if not matched_sector:
                 matched_sector = clean_name[:4] if len(clean_name) >= 4 else clean_name
                 if not matched_sector: matched_sector = "其他指数"
                 
@@ -261,6 +288,23 @@ class ValuationFetcher(QThread):
         return index_code  # 没找到就用指数代码兜底
 
 
+    def extract_sector_from_name(self, index_name):
+        """从指数名称中提取板块关键词"""
+        sector_keywords = [
+            '半导体', '芯片', '白酒', '中药', '医药', '医疗', '生物', '新能源车', '新能源', '光伏',
+            '电池', '军工', '券商', '证券', '银行', '煤炭', '有色', '黄金', '钢铁', '传媒',
+            '游戏', '汽车', '消费', '食品', '饮料', '农业', '地产', '房地产', '基建', '环保',
+            '互联网', '科技', '碳中和', '原油', '能源', '稀土', '红利', '创业板',
+            '信创', '软件', '计算机', '人工智能', '机械', '化工', '旅游', '家电',
+            '机器人', '智能', '数字经济', '港股', '保险', '电力', '通信', '物联网'
+        ]
+        for kw in sector_keywords:
+            if kw in index_name:
+                return kw
+        # 清理后取核心名称
+        clean = index_name.replace("指数", "").replace("CS", "").replace("中证", "").replace("国证", "").strip()
+        return clean[:4] if len(clean) >= 2 else index_name
+
     def run(self):
         url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNIndexValuationList?pageIndex=1&pageSize=500&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
         headers = {
@@ -300,6 +344,7 @@ class ValuationFetcher(QThread):
                         code = item["INDEXCODE"]
                         index_name = item["INDEXNAME"]
                         fund_code = self.find_fund_for_index(code, index_name)
+                        sector = self.extract_sector_from_name(index_name)
                         res_item = {
                             "bzdm": code, 
                             "fund_code": fund_code,
@@ -308,7 +353,7 @@ class ValuationFetcher(QThread):
                             "pb": item["PB"],
                             "pe_percentile": f"{item['pe_pct_float']:.2f}",
                             "valuation_tag": tag,
-                            "extracted_sector": "指数估值"
+                            "extracted_sector": sector
                         }
                         combined.append(res_item)
 

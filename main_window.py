@@ -238,11 +238,16 @@ class FundApp(QMainWindow):
             json.dump(self.config, f, ensure_ascii=False, indent=4)
 
     def open_settings(self):
+        old_drops = list(self.config.get("drop_days", []))
+        old_pcts = list(self.config.get("percentile_months", []))
+        
         dialog = SettingsDialog(self.config, self.headers, self)
         if dialog.exec():
             self.save_config()
             self.rebuild_table_headers()
-            self.refresh_data()
+            # 仅当数据参数变化时才刷新数据
+            if self.config.get("drop_days") != old_drops or self.config.get("percentile_months") != old_pcts:
+                self.refresh_data()
 
     def toggle_auto_refresh(self):
         if self.refresh_timer.isActive():
@@ -345,6 +350,7 @@ class FundApp(QMainWindow):
 
         self.btn_refresh.setEnabled(False)
         self.table1.setSortingEnabled(False)
+        self.latest_data_time = ""  # 重置数据源时间
         
         funds = list(self.config.get("funds_info", {}).keys())
         
@@ -403,6 +409,11 @@ class FundApp(QMainWindow):
         self.table3.setSortingEnabled(False)
         self.table3.setRowCount(0)
         
+        # 将 table3 的"持有"列复用为"估值"列
+        if self.table3.columnCount() > 1:
+            self.table3.horizontalHeaderItem(1).setText("估值")
+            self.table3.setColumnHidden(1, False)
+        
         self.valuation_mapping = {} # index_code -> fund_code
         fetch_codes = []
 
@@ -418,16 +429,26 @@ class FundApp(QMainWindow):
             self.table3.insertRow(row)
             
             self.table3.setItem(row, 0, SortableTableWidgetItem(str(row + 1)))
-            self.table3.setItem(row, 1, SortableTableWidgetItem("-"))
-            self.table3.setItem(row, 2, SortableTableWidgetItem(fund_code))
-            self.table3.setItem(row, 3, SortableTableWidgetItem(index_name))
             
+            # col 1: 估值标签（PE最高/PB最低等）
             tag_text = item.get("valuation_tag", "")
+            is_high = "高" in tag_text
             tag_item = SortableTableWidgetItem(tag_text)
-            if "高" in tag_text: tag_item.setForeground(QBrush(QColor("#ff4757")))
-            else: tag_item.setForeground(QBrush(QColor("#2ed573")))
+            tag_item.setForeground(QBrush(QColor("#ff4757" if is_high else "#2ed573")))
             tag_item.setFont(QFont("Arial", 9, QFont.Bold))
-            self.table3.setItem(row, 4, tag_item)
+            self.table3.setItem(row, 1, tag_item)
+            
+            self.table3.setItem(row, 2, SortableTableWidgetItem(fund_code))
+            
+            # col 3: 基金名称，估值高为红色，估值低为绿色
+            name_item = SortableTableWidgetItem(index_name)
+            name_item.setForeground(QBrush(QColor("#ff4757" if is_high else "#2ed573")))
+            self.table3.setItem(row, 3, name_item)
+            
+            # col 4: 基金板块（实际板块名称）
+            sector = item.get("extracted_sector", "")
+            sector_item = SortableTableWidgetItem(sector)
+            self.table3.setItem(row, 4, sector_item)
             
             pe_val = item.get("pe", "--")
             pb_val = item.get("pb", "--")
@@ -447,7 +468,7 @@ class FundApp(QMainWindow):
             else:
                 add_btn.setText("➕关注")
                 add_btn.setStyleSheet("background-color: #2ed573; color: white; border-radius: 3px; padding:2px;")
-                add_btn.clicked.connect(lambda checked, c=fund_code, n=index_name, s="估值榜": self.add_from_market(c, n, s))
+                add_btn.clicked.connect(lambda checked, c=fund_code, n=index_name, s=sector: self.add_from_market(c, n, s))
             
             self.table3.setCellWidget(row, len(self.headers) - 1, add_btn)
             
@@ -495,7 +516,7 @@ class FundApp(QMainWindow):
             self.table2.setItem(row, 2, SortableTableWidgetItem(code))
             self.table2.setItem(row, 3, SortableTableWidgetItem(name))
             
-            tag_text = f"🔥 {sector}" if is_top else f"🧊 {sector}"
+            tag_text = f"{sector}" if is_top else f"{sector}"
             tag_item = SortableTableWidgetItem(tag_text)
             tag_item.setForeground(QBrush(QColor("#ff4757" if is_top else "#2ed573")))
             tag_item.setFont(QFont("Arial", 9, QFont.Bold))
@@ -537,6 +558,11 @@ class FundApp(QMainWindow):
     def dispatch_table_update(self, data):
         code = data.get('fundcode')
         name = data.get('name')
+        
+        # 跟踪最新的数据源时间
+        gztime = data.get('gztime', '')
+        if gztime and gztime > getattr(self, 'latest_data_time', ''):
+            self.latest_data_time = gztime
         
         if 'new_history' in data:
             self.history_cache[code] = data['new_history']
@@ -678,9 +704,11 @@ class FundApp(QMainWindow):
             self.save_config()
             self.need_config_save = False
             
-        msg = f"全市场数据最后更新时间: {time.strftime('%H:%M:%S')}"
+        data_time = getattr(self, 'latest_data_time', '') or '未知'
+        fetch_time = time.strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"数据时间: {data_time}  |  获取时间: {fetch_time}"
         if self.refresh_timer.isActive():
-            msg += " (自动刷新运行中...)"
+            msg += "  (自动刷新运行中...)"
         self.statusBar().showMessage(msg)
 
 if __name__ == "__main__":
