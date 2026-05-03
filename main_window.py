@@ -316,6 +316,10 @@ class FundApp(QMainWindow):
             self.refresh_data()
             
     def add_from_market(self, code, name, sector):
+        if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
+            from utils import extract_fund_sector
+            sector = extract_fund_sector(name)
+
         if code not in self.config.get("funds_info", {}):
             self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": ""}
             self.save_config()
@@ -649,7 +653,10 @@ class FundApp(QMainWindow):
             val = pcts_dict.get(m)
             if val is not None:
                 item = SortableTableWidgetItem(f"{val:.2f}%")
-                if val <= 25: item.setForeground(QBrush(QColor("#2ed573")))
+                if val <= 25:
+                    item.setForeground(QBrush(QColor("white")))
+                    item.setBackground(QBrush(QColor("#2ed573")))
+                    item.setFont(QFont("Arial", 10, QFont.Bold))
                 elif val >= 75: item.setForeground(QBrush(QColor("#ff4757")))
                 else: item.setForeground(QBrush(QColor("#57606f")))
             else:
