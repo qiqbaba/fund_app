@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QBrush, QFont
 from config import CONFIG_FILE
 from widgets import SettingsDialog, SortableTableWidgetItem
 from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
+from db_manager import FundHistoryDB
 
 class FundApp(QMainWindow):
     def __init__(self):
@@ -29,6 +30,10 @@ class FundApp(QMainWindow):
         self.all_funds_dict = {} 
         self.all_funds_code_to_name = {}
         self.need_config_save = False 
+        
+        # 初始化数据库并从本地加载历史数据
+        self.db = FundHistoryDB()
+        self.load_history_from_db()
         
         self.refresh_timer = QTimer()
         self.refresh_interval = 60000 
@@ -236,6 +241,14 @@ class FundApp(QMainWindow):
     def save_config(self):
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=4)
+
+    def load_history_from_db(self):
+        """从本地数据库加载历史数据到内存缓存"""
+        db_fund_codes = self.db.get_all_fund_codes()
+        for code in db_fund_codes:
+            history_data = self.db.get_history(code)
+            if history_data:
+                self.history_cache[code] = history_data
 
     def open_settings(self):
         old_drops = list(self.config.get("drop_days", []))
@@ -489,7 +502,7 @@ class FundApp(QMainWindow):
             self.fetcher.requestInterruption()
             self.fetcher.wait()
 
-        self.fetcher = FundDataFetcher(all_fetch_codes, self.config, self.history_cache, self.all_funds_code_to_name)
+        self.fetcher = FundDataFetcher(all_fetch_codes, self.config, self.history_cache, self.all_funds_code_to_name, self.db)
         self.fetcher.update_signal.connect(self.dispatch_table_update)
         self.fetcher.error_signal.connect(self.dispatch_table_error)
         self.fetcher.finish_signal.connect(self.on_fetch_finish)
@@ -553,7 +566,7 @@ class FundApp(QMainWindow):
             self.fetcher.requestInterruption()
             self.fetcher.wait()
 
-        self.fetcher = FundDataFetcher(all_fetch_codes, self.config, self.history_cache, self.all_funds_code_to_name)
+        self.fetcher = FundDataFetcher(all_fetch_codes, self.config, self.history_cache, self.all_funds_code_to_name, self.db)
         self.fetcher.update_signal.connect(self.dispatch_table_update)
         self.fetcher.error_signal.connect(self.dispatch_table_error)
         self.fetcher.finish_signal.connect(self.on_fetch_finish)

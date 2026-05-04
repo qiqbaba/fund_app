@@ -5,6 +5,7 @@ import time
 import random
 import requests
 from PySide6.QtCore import QThread, Signal
+from db_manager import FundHistoryDB
 
 class RankingFetcher(QThread):
     """抓取当日指数/板块场外ETF涨跌排行榜的线程（带板块智能去重去同质化）"""
@@ -70,12 +71,13 @@ class FundDataFetcher(QThread):
     error_signal = Signal(str, str)
     finish_signal = Signal()
 
-    def __init__(self, fund_codes, config, history_cache, code_to_name_dict):
+    def __init__(self, fund_codes, config, history_cache, code_to_name_dict, db=None):
         super().__init__()
         self.fund_codes = fund_codes
         self.config = config
         self.history_cache = history_cache
         self.code_to_name_dict = code_to_name_dict
+        self.db = db if db else FundHistoryDB()  # 如果没传数据库实例就创建新的
 
     def run(self):
         session = requests.Session()
@@ -92,39 +94,56 @@ class FundDataFetcher(QThread):
             
         data = {'fundcode': code, 'name': saved_name}
         
-        # ================= 1. 优先获取历史净值数据 =================
-        his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=600&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+        # ================= 1. 优先检查缓存中是否已有历史数据 =================
         history_success = False
+        if code in self.history_cache:
+            # 内存中已有数据，直接使用
+            data['new_history'] = self.history_cache[code]
+            history_success = True
+        else:
+            # 尝试从数据库中读取
+            db_history = self.db.get_history(code)
+            if db_history:
+                self.history_cache[code] = db_history
+                data['new_history'] = db_history
+                history_success = True
         
-        try:
-            r_his = session.get(his_url, timeout=5)
-            his_data = r_his.json()
-            navs = []
-            
-            if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
-                for item in his_data.get("Datas"):
-                    try:
-                        val = item.get("DWJZ")
-                        if val: navs.append(float(val))
-                    except ValueError: pass
+        # ================= 2. 如果本地没有历史数据，则从接口获取 =================
+        if not history_success:
+            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=600&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+            try:
+                r_his = session.get(his_url, timeout=5)
+                his_data = r_his.json()
+                navs = []
                 
-                if navs:
-                    latest_item = his_data.get("Datas")[0]
-                    latest_date = latest_item.get("FSRQ", "")
+                if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
+                    for item in his_data.get("Datas"):
+                        try:
+                            val = item.get("DWJZ")
+                            if val: navs.append(float(val))
+                        except ValueError: pass
                     
-                    data['new_history'] = {'jzrq': latest_date, 'navs': navs}
-                    self.history_cache[code] = data['new_history']
-                    
-                    data['jzrq'] = latest_date
-                    data['dwjz'] = latest_item.get("DWJZ", "")
-                    data['gsz'] = latest_item.get("DWJZ", "")
-                    data['gszzl'] = latest_item.get("JZZZL", "")
-                    data['gztime'] = f"{latest_date} (实际净值)"
-                    history_success = True
-        except Exception:
-            pass
+                    if navs:
+                        latest_item = his_data.get("Datas")[0]
+                        latest_date = latest_item.get("FSRQ", "")
+                        
+                        history_data = {'jzrq': latest_date, 'navs': navs}
+                        data['new_history'] = history_data
+                        self.history_cache[code] = history_data
+                        
+                        # 保存到数据库
+                        self.db.save_history(code, latest_date, navs)
+                        
+                        data['jzrq'] = latest_date
+                        data['dwjz'] = latest_item.get("DWJZ", "")
+                        data['gsz'] = latest_item.get("DWJZ", "")
+                        data['gszzl'] = latest_item.get("JZZZL", "")
+                        data['gztime'] = f"{latest_date} (实际净值)"
+                        history_success = True
+            except Exception:
+                pass
 
-        # ================= 2. 尝试获取实时估值数据 =================
+        # ================= 3. 尝试获取实时估值数据 =================
         timestamp = int(time.time() * 1000)
         url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={timestamp}"
         
@@ -149,7 +168,7 @@ class FundDataFetcher(QThread):
         if not history_success and 'gsz' not in data:
             return {'error': True, 'code': code, 'msg': "暂无数据"}
 
-        # ================= 3. 计算涨跌幅与百分位 =================
+        # ================= 4. 计算涨跌幅与百分位 =================
         try:
             current_val = float(data.get('gsz', data.get('dwjz', 0)))
             history_navs = self.history_cache.get(code, {}).get('navs', [])
@@ -327,4 +346,4 @@ class ValuationFetcher(QThread):
 
                 self.valuation_signal.emit(combined)
         except Exception:
-            self.valuation_signal.emit([])
+            self.valuation_signal.emit([])
