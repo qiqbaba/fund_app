@@ -1,4 +1,3 @@
-
 # main_window.py
 import json
 import os
@@ -8,16 +7,18 @@ import requests
 import threading
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                               QLineEdit, QPushButton, QTableWidget, QHeaderView, 
-                               QMessageBox, QCheckBox, QTabWidget)
+                               QLineEdit, QPushButton, QTableView, QHeaderView, 
+                               QMessageBox, QTabWidget)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QFont
 
 # 引入拆分出去的模块
 from config import CONFIG_FILE
-from widgets import SettingsDialog, SortableTableWidgetItem
+from widgets import SettingsDialog
 from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
 from db_manager import FundHistoryDB
+from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
+                         HoldingInputWidget, ActionButtonWidget)
 
 class FundApp(QMainWindow):
     def __init__(self):
@@ -80,33 +81,39 @@ class FundApp(QMainWindow):
 
         self.tabs = QTabWidget()
         
+        # Tab 1: 我的自选基金
         self.tab1 = QWidget()
         layout1 = QVBoxLayout(self.tab1)
         layout1.setContentsMargins(0, 0, 0, 0)
-        self.table1 = QTableWidget()
-        self.table1.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table1 = QTableView()
         self.table1.setAlternatingRowColors(True)
         self.table1.verticalHeader().setVisible(False)
+        self.table1.setSelectionBehavior(QTableView.SelectRows)
+        self.table1.setSelectionMode(QTableView.SingleSelection)
         layout1.addWidget(self.table1)
         
+        # Tab 2: 排行榜
         self.tab2 = QWidget()
         layout2 = QVBoxLayout(self.tab2)
         layout2.setContentsMargins(0, 0, 0, 0)
-        self.table2 = QTableWidget()
-        self.table2.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table2 = QTableView()
         self.table2.setAlternatingRowColors(True)
         self.table2.verticalHeader().setVisible(False)
+        self.table2.setSelectionBehavior(QTableView.SelectRows)
+        self.table2.setSelectionMode(QTableView.SingleSelection)
         layout2.addWidget(self.table2)
-
+        
+        # Tab 3: 估值榜
         self.tab3 = QWidget()
         layout3 = QVBoxLayout(self.tab3)
         layout3.setContentsMargins(0, 0, 0, 0)
-        self.table3 = QTableWidget()
-        self.table3.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table3 = QTableView()
         self.table3.setAlternatingRowColors(True)
         self.table3.verticalHeader().setVisible(False)
+        self.table3.setSelectionBehavior(QTableView.SelectRows)
+        self.table3.setSelectionMode(QTableView.SingleSelection)
         layout3.addWidget(self.table3)
-
+        
         self.tabs.addTab(self.tab1, "⭐ 我的自选基金")
         self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜 (已过滤同质化)")
         self.tabs.addTab(self.tab3, "💎 估值榜 (PE/PB 最高最低)")
@@ -114,52 +121,16 @@ class FundApp(QMainWindow):
         layout.addWidget(self.tabs)
 
         self.apply_styles()
+        
+        # 初始化表格模型和代理 - 将在 rebuild_table_headers 中设置
+        self.model1 = None
+        self.model2 = None
+        self.model3 = None
+        self.delegate1 = None
+        self.delegate2 = None
+        self.delegate3 = None
+        
         self.rebuild_table_headers()
-
-    def create_held_checkbox(self, code, is_held):
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignCenter)
-        cb = QCheckBox()
-        cb.setChecked(is_held)
-        cb.stateChanged.connect(lambda state, c=code: self.update_is_held(c, state))
-        layout.addWidget(cb)
-        return widget
-
-    def update_is_held(self, code, state):
-        if code in self.config.get("funds_info", {}):
-            self.config["funds_info"][code]["is_held"] = (state == 2) 
-            self.save_config()
-
-    def create_holding_input(self, code, amount, yield_rate):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 4, 5, 4)
-        layout.setSpacing(2)
-        
-        amt_input = QLineEdit(str(amount) if amount else "")
-        amt_input.setPlaceholderText("金额")
-        amt_input.setStyleSheet("background: transparent; border: 1px solid #ced6e0; border-radius: 3px; padding: 1px 3px; font-size: 11px;")
-        amt_input.editingFinished.connect(lambda: self.update_holding(code, 'amount', amt_input.text()))
-        
-        yld_input = QLineEdit(str(yield_rate) if yield_rate else "")
-        yld_input.setPlaceholderText("收益率%")
-        yld_input.setStyleSheet("background: transparent; border: 1px solid #ced6e0; border-radius: 3px; padding: 1px 3px; font-size: 11px;")
-        yld_input.editingFinished.connect(lambda: self.update_holding(code, 'yield_rate', yld_input.text()))
-        
-        layout.addWidget(amt_input)
-        layout.addWidget(yld_input)
-        return widget
-
-    def update_holding(self, code, key, value):
-        if code in self.config.get("funds_info", {}):
-            self.config["funds_info"][code][key] = value
-            self.save_config()
-            if key == 'amount':
-                row = self.get_row_by_code(self.table1, code)
-                if row != -1 and self.table1.item(row, 5):
-                    self.table1.item(row, 5).setText(str(value) if value else "0")
 
     def rebuild_table_headers(self):
         self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "持有金额/\n收益率", 
@@ -174,17 +145,25 @@ class FundApp(QMainWindow):
         
         hidden_cols = self.config.get("hidden_columns", [])
         
-        for table in [self.table1, self.table2, self.table3]:
-            table.setSortingEnabled(False)
-            table.setColumnCount(len(self.headers))
-            table.setHorizontalHeaderLabels(self.headers)
+        # 创建模型和代理
+        for table, table_type in [(self.table1, "my_fund"), (self.table2, "ranking"), (self.table3, "valuation")]:
+            model = FundTableModel(self.headers, parent=self)
+            delegate = FundTableDelegate(table_type=table_type, parent=self)
             
+            table.setModel(model)
+            table.setItemDelegate(delegate)
+            
+            # 启用排序
+            table.setSortingEnabled(True)
+            
+            # 配置列
             header_view = table.horizontalHeader()
             header_view.setSectionResizeMode(QHeaderView.Interactive)
-            header_view.setDefaultSectionSize(90) 
+            header_view.setDefaultSectionSize(90)
             
             table.verticalHeader().setDefaultSectionSize(55)
             
+            # 设置列宽
             table.setColumnWidth(0, 40)
             table.setColumnWidth(1, 40)
             table.setColumnWidth(2, 70)
@@ -201,10 +180,20 @@ class FundApp(QMainWindow):
             header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
             table.setColumnWidth(action_col_index, 60)
             
+            # 隐藏指定列
             for i, h in enumerate(self.headers):
                 table.setColumnHidden(i, h in hidden_cols)
-                
-            table.setSortingEnabled(True)
+            
+            # 保存模型和代理引用
+            if table == self.table1:
+                self.model1 = model
+                self.delegate1 = delegate
+            elif table == self.table2:
+                self.model2 = model
+                self.delegate2 = delegate
+            else:  # table3
+                self.model3 = model
+                self.delegate3 = delegate
 
     def apply_styles(self):
         self.setStyleSheet("""
@@ -213,7 +202,7 @@ class FundApp(QMainWindow):
             QPushButton { background-color: #0097e6; color: white; border-radius: 4px; font-weight: bold; font-size: 13px; padding: 0 15px;}
             QPushButton:hover { background-color: #00a8ff; }
             QPushButton:disabled { background-color: #a4b0be; }
-            QTableWidget { background-color: white; border: 1px solid #dcdde1; border-radius: 4px; font-size: 13px;}
+            QTableView { background-color: white; border: 1px solid #dcdde1; border-radius: 4px; font-size: 13px;}
             QHeaderView::section { background-color: #f1f2f6; padding: 5px; font-weight: bold; border-right: 1px solid #dcdde1; border-bottom: 1px solid #dcdde1;}
             QTabWidget::pane { border: 1px solid #dcdde1; border-radius: 4px; background: white; margin-top:-1px;}
             QTabBar::tab { background: #f1f2f6; padding: 8px 20px; border: 1px solid #dcdde1; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; font-weight: bold;}
@@ -293,8 +282,6 @@ class FundApp(QMainWindow):
             if name_query in name: return code
         return None
 
-
-
     def add_funds(self):
         text = self.input_box.text().strip()
         if not text: return
@@ -340,80 +327,59 @@ class FundApp(QMainWindow):
             
             row = self.get_row_by_code(self.table2, code)
             if row != -1:
-                btn = self.table2.cellWidget(row, len(self.headers) - 1)
-                if btn:
-                    btn.setText("已添加")
-                    btn.setEnabled(False)
-                    btn.setStyleSheet("background-color: #a4b0be; color: white; border-radius: 3px; padding:2px;")
+                # 更新按钮状态 - 在表2中标记为已添加
+                self._update_market_btn_status(self.model2, row)
+                
+    def _update_market_btn_status(self, model, row):
+        """更新市场表的按钮状态"""
+        row_data = model.get_row_data(row)
+        row_data["操作"] = "已添加"
+        model.update_row(row, row_data)
 
     def get_row_by_code(self, table, code):
-        for row in range(table.rowCount()):
-            item = table.item(row, 2)
-            if item and item.text() == code:
-                return row
+        """查找表格中第一个匹配代码的行号"""
+        model = table.model()
+        if model and hasattr(model, 'find_row_by_code'):
+            return model.find_row_by_code(code)
         return -1
 
     def get_all_rows_by_code(self, table, code):
         """返回表格中所有匹配该代码的行号列表"""
-        rows = []
-        for row in range(table.rowCount()):
-            item = table.item(row, 2)
-            if item and item.text() == code:
-                rows.append(row)
-        return rows
+        model = table.model()
+        if model and hasattr(model, 'find_all_rows_by_code'):
+            return model.find_all_rows_by_code(code)
+        return []
 
     def refresh_data(self):
         if not self.btn_refresh.isEnabled(): return
 
         self.btn_refresh.setEnabled(False)
-        self.table1.setSortingEnabled(False)
         self.latest_data_time = ""  # 重置数据源时间
         
         funds = list(self.config.get("funds_info", {}).keys())
         
-        for row in range(self.table1.rowCount() - 1, -1, -1):
-            code_item = self.table1.item(row, 2)
-            if code_item and code_item.text() not in funds:
-                self.table1.removeRow(row)
-                
-        existing_codes = [self.table1.item(i, 2).text() for i in range(self.table1.rowCount()) if self.table1.item(i, 2)]
+        # 清空现有数据
+        self.model1.clear_all()
         
+        # 添加新的行
         for code in funds:
-            if code not in existing_codes:
-                row = self.table1.rowCount()
-                self.table1.insertRow(row)
-                
-                self.table1.setItem(row, 0, SortableTableWidgetItem(str(row + 1)))
-                
-                is_held = self.config["funds_info"][code].get("is_held", False)
-                self.table1.setCellWidget(row, 1, self.create_held_checkbox(code, is_held))
-                item_held = SortableTableWidgetItem(str(is_held))
-                item_held.setForeground(QBrush(QColor(0,0,0,0)))
-                self.table1.setItem(row, 1, item_held)
-                
-                self.table1.setItem(row, 2, SortableTableWidgetItem(code))
-                self.table1.setItem(row, 3, SortableTableWidgetItem("加载中..."))
-                
-                sector = self.config["funds_info"][code].get("sector", "")
-                self.table1.setItem(row, 4, SortableTableWidgetItem(sector))
-                
-                amount = self.config["funds_info"][code].get("amount", "")
-                yield_rate = self.config["funds_info"][code].get("yield_rate", "")
-                self.table1.setCellWidget(row, 5, self.create_holding_input(code, amount, yield_rate))
-                item_holding = SortableTableWidgetItem(str(amount) if amount else "0")
-                item_holding.setForeground(QBrush(QColor(0,0,0,0)))
-                self.table1.setItem(row, 5, item_holding)
-                
-                for col in range(6, len(self.headers) - 1): 
-                    self.table1.setItem(row, col, SortableTableWidgetItem("-"))
-                
-                del_btn = QPushButton("删除")
-                del_btn.setStyleSheet("background-color: #ff4757; color: white; border-radius: 3px; padding:2px;")
-                del_btn.clicked.connect(lambda checked, c=code: self.delete_fund(c))
-                self.table1.setCellWidget(row, len(self.headers) - 1, del_btn)
-
-        self.table1.setSortingEnabled(True)
-
+            row_data = {}
+            for header in self.headers:
+                row_data[header] = "-"
+            
+            # 初始化基本信息
+            row_data["序号"] = str(len(self.model1.data_rows) + 1)
+            row_data["持有"] = "0"  # 用于排序
+            row_data["基金代码"] = code
+            row_data["基金名称"] = "加载中..."
+            
+            sector = self.config["funds_info"][code].get("sector", "")
+            row_data["基金板块"] = sector
+            row_data["持有金额/\n收益率"] = self.config["funds_info"][code].get("amount", "")
+            
+            self.model1.add_row(row_data)
+        
+        # 启动排行数据获取
         self.ranking_fetcher = RankingFetcher(self.all_funds_code_to_name) 
         self.ranking_fetcher.ranking_signal.connect(self.on_ranking_fetched)
         self.ranking_fetcher.start()
@@ -423,13 +389,7 @@ class FundApp(QMainWindow):
         self.valuation_fetcher.start()
 
     def on_valuation_fetched(self, valuation_list):
-        self.table3.setSortingEnabled(False)
-        self.table3.setRowCount(0)
-        
-        # 将 table3 的"持有"列复用为"估值"列
-        if self.table3.columnCount() > 1:
-            self.table3.horizontalHeaderItem(1).setText("估值")
-            self.table3.setColumnHidden(1, False)
+        self.model3.clear_all()
         
         self.valuation_mapping = {} # index_code -> fund_code
         fetch_codes = []
@@ -442,60 +402,36 @@ class FundApp(QMainWindow):
             self.valuation_mapping[fund_code] = index_code
             fetch_codes.append(fund_code)
             
-            row = self.table3.rowCount()
-            self.table3.insertRow(row)
+            row_data = {}
+            for header in self.headers:
+                row_data[header] = "-"
             
-            self.table3.setItem(row, 0, SortableTableWidgetItem(str(row + 1)))
+            row_data["序号"] = str(i + 1)
             
             # col 1: 估值标签（PE最高/PB最低等）
             tag_text = item.get("valuation_tag", "")
-            is_high = "高" in tag_text
-            tag_item = SortableTableWidgetItem(tag_text)
-            tag_item.setForeground(QBrush(QColor("#ff4757" if is_high else "#2ed573")))
-            tag_item.setFont(QFont("Arial", 9, QFont.Bold))
-            self.table3.setItem(row, 1, tag_item)
+            row_data["持有"] = tag_text
             
-            self.table3.setItem(row, 2, SortableTableWidgetItem(fund_code))
-            
-            # col 3: 基金名称，估值高为红色，估值低为绿色
-            name_item = SortableTableWidgetItem(index_name)
-            name_item.setForeground(QBrush(QColor("#ff4757" if is_high else "#2ed573")))
-            self.table3.setItem(row, 3, name_item)
+            row_data["基金代码"] = fund_code
+            row_data["基金名称"] = index_name
             
             # col 4: 基金板块（实际板块名称）
             sector = item.get("extracted_sector", "")
-            sector_item = SortableTableWidgetItem(sector)
-            self.table3.setItem(row, 4, sector_item)
+            row_data["基金板块"] = sector
             
             pe_val = item.get("pe", "--")
             pb_val = item.get("pb", "--")
             pe_pct = item.get("pe_percentile", "--")
             display_info = f"PE:{pe_val} ({pe_pct}%)\nPB:{pb_val}"
-            info_item = SortableTableWidgetItem(display_info)
-            self.table3.setItem(row, 5, info_item)
+            row_data["持有金额/\n收益率"] = display_info
             
-            for col in range(6, len(self.headers) - 1):
-                self.table3.setItem(row, col, SortableTableWidgetItem("-"))
+            row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"
             
-            add_btn = QPushButton()
-            if fund_code in self.config.get("funds_info", {}):
-                add_btn.setText("已添加")
-                add_btn.setEnabled(False)
-                add_btn.setStyleSheet("background-color: #a4b0be; color: white; border-radius: 3px; padding:2px;")
-            else:
-                add_btn.setText("➕关注")
-                add_btn.setStyleSheet("background-color: #2ed573; color: white; border-radius: 3px; padding:2px;")
-                add_btn.clicked.connect(lambda checked, c=fund_code, n=index_name, s=sector: self.add_from_market(c, n, s))
-            
-            self.table3.setCellWidget(row, len(self.headers) - 1, add_btn)
-            
-        self.table3.setSortingEnabled(True)
-        if self.table3.columnCount() > 5:
-            self.table3.horizontalHeaderItem(5).setText("估值数据\n(PE/PB)")
+            self.model3.add_row(row_data)
         
         # 启动数据抓取（合并之前的自选和排行榜）
         my_funds = list(self.config.get("funds_info", {}).keys())
-        market_codes = [self.table2.item(i, 2).text() for i in range(self.table2.rowCount()) if self.table2.item(i, 2)]
+        market_codes = [self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows))]
         all_fetch_codes = list(set(my_funds + market_codes + fetch_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
@@ -509,8 +445,7 @@ class FundApp(QMainWindow):
         self.fetcher.start()
 
     def on_ranking_fetched(self, top_list, bot_list):
-        self.table2.setSortingEnabled(False)
-        self.table2.setRowCount(0)
+        self.model2.clear_all()
         
         market_codes = []
         combined_list = top_list + bot_list
@@ -523,43 +458,25 @@ class FundApp(QMainWindow):
             if not code: continue
             
             market_codes.append(code)
-            row = self.table2.rowCount()
-            self.table2.insertRow(row)
-            
             is_top = i < len(top_list)
             
-            self.table2.setItem(row, 0, SortableTableWidgetItem(str(row + 1)))
-            self.table2.setItem(row, 1, SortableTableWidgetItem("-"))
-            self.table2.setItem(row, 2, SortableTableWidgetItem(code))
-            self.table2.setItem(row, 3, SortableTableWidgetItem(name))
+            row_data = {}
+            for header in self.headers:
+                row_data[header] = "-"
             
-            tag_text = f"{sector}" if is_top else f"{sector}"
-            tag_item = SortableTableWidgetItem(tag_text)
-            tag_item.setForeground(QBrush(QColor("#ff4757" if is_top else "#2ed573")))
-            tag_item.setFont(QFont("Arial", 9, QFont.Bold))
-            self.table2.setItem(row, 4, tag_item)
+            row_data["序号"] = str(i + 1)
+            row_data["持有"] = "-"
+            row_data["基金代码"] = code
+            row_data["基金名称"] = name
+            row_data["基金板块"] = sector
+            row_data["持有金额/\n收益率"] = "-"
             
-            self.table2.setItem(row, 5, SortableTableWidgetItem("-"))
+            row_data["操作"] = "已添加" if code in self.config.get("funds_info", {}) else "➕关注"
             
-            for col in range(6, len(self.headers) - 1): 
-                self.table2.setItem(row, col, SortableTableWidgetItem("-"))
-            
-            add_btn = QPushButton()
-            if code in self.config.get("funds_info", {}):
-                add_btn.setText("已添加")
-                add_btn.setEnabled(False)
-                add_btn.setStyleSheet("background-color: #a4b0be; color: white; border-radius: 3px; padding:2px;")
-            else:
-                add_btn.setText("➕关注")
-                add_btn.setStyleSheet("background-color: #2ed573; color: white; border-radius: 3px; padding:2px;")
-                add_btn.clicked.connect(lambda checked, c=code, n=name, s=sector: self.add_from_market(c, n, s))
-            
-            self.table2.setCellWidget(row, len(self.headers) - 1, add_btn)
-            
-        self.table2.setSortingEnabled(True)
+            self.model2.add_row(row_data)
         
         my_funds = list(self.config.get("funds_info", {}).keys())
-        valuation_codes = [self.table3.item(i, 2).text() for i in range(self.table3.rowCount()) if self.table3.item(i, 2)]
+        valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
         all_fetch_codes = list(set(my_funds + market_codes + valuation_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
@@ -590,32 +507,34 @@ class FundApp(QMainWindow):
             if config_name != name:
                 self.config["funds_info"][code]["name"] = name
                 self.need_config_save = True
-            self.populate_row_data(self.table1, row1, data, is_my_fund=True)
+            self.populate_row_data(self.model1, row1, data, is_my_fund=True)
             
         row2 = self.get_row_by_code(self.table2, code)
         if row2 != -1:
-            self.populate_row_data(self.table2, row2, data, is_my_fund=False)
+            self.populate_row_data(self.model2, row2, data, is_my_fund=False)
             
         for row3 in self.get_all_rows_by_code(self.table3, code):
-            self.populate_row_data(self.table3, row3, data, is_my_fund=False)
+            self.populate_row_data(self.model3, row3, data, is_my_fund=False)
 
-    def populate_row_data(self, table, row, data, is_my_fund):
-        table.setSortingEnabled(False) 
+    def populate_row_data(self, model, row, data, is_my_fund):
+        """更新行数据"""
+        if row < 0 or row >= len(model.data_rows):
+            return
+        
+        row_data = model.get_row_data(row)
         code = data.get('fundcode')
         
-        table.setItem(row, 3, SortableTableWidgetItem(data.get('name')))
+        row_data["基金名称"] = data.get('name')
         
         if is_my_fund:
             sector = self.config["funds_info"].get(code, {}).get("sector", "")
-            current_sector_item = table.item(row, 4)
-            if current_sector_item and current_sector_item.text() != sector:
-                current_sector_item.setText(sector)
+            row_data["基金板块"] = sector
             
-        table.setItem(row, 6, SortableTableWidgetItem(data.get('dwjz')))
-        table.setItem(row, 7, SortableTableWidgetItem(data.get('jzrq')))
-        table.setItem(row, 8, SortableTableWidgetItem(data.get('gsz')))
+        row_data["昨日净值"] = data.get('dwjz')
+        row_data["净值日期"] = data.get('jzrq')
+        row_data["实时估值"] = data.get('gsz')
         
-        change_str = data.get('gszzl')
+        change_str = data.get('gszzl', "")
         if is_my_fund:
             held_amount_str = self.config["funds_info"].get(code, {}).get("amount", "")
             try: held_amount = float(held_amount_str)
@@ -628,95 +547,73 @@ class FundApp(QMainWindow):
                     display_text = f"{today_profit:+.2f}\n{val:+.2f}%"
                 else:
                     display_text = f"-\n{val:+.2f}%"
-                    
-                change_item = SortableTableWidgetItem(display_text)
-                change_item.setFont(QFont("Arial", 10, QFont.Bold))
-                if val > 0: change_item.setForeground(QBrush(QColor("#ff4757"))) 
-                elif val < 0: change_item.setForeground(QBrush(QColor("#2ed573"))) 
+                row_data["今日收益/\n收益率"] = display_text
             except: 
-                change_item = SortableTableWidgetItem(f"-\n{change_str}%")
+                row_data["今日收益/\n收益率"] = f"-\n{change_str}%"
         else:
             try:
                 val = float(change_str)
                 display_text = f"-\n{val:+.2f}%"
-                change_item = SortableTableWidgetItem(display_text)
-                change_item.setFont(QFont("Arial", 10, QFont.Bold))
-                if val > 0: change_item.setForeground(QBrush(QColor("#ff4757"))) 
-                elif val < 0: change_item.setForeground(QBrush(QColor("#2ed573"))) 
+                row_data["今日收益/\n收益率"] = display_text
             except:
-                change_item = SortableTableWidgetItem(f"-\n{change_str}%")
-                
-        table.setItem(row, 9, change_item)
+                row_data["今日收益/\n收益率"] = f"-\n{change_str}%"
         
-        col_index = 10
+        # 涨跌幅
+        col_index = 0
         drops_dict = data.get('drops', {})
         for d in self.drop_days:
             val = drops_dict.get(d)
+            header = f"近{d}日涨跌"
             if val is not None:
-                item = SortableTableWidgetItem(f"{val:+.2f}%")
-                if val > 0: item.setForeground(QBrush(QColor("#ff4757")))
-                elif val < 0: item.setForeground(QBrush(QColor("#2ed573")))
+                row_data[header] = f"{val:+.2f}%"
             else:
-                item = SortableTableWidgetItem("-")
-            table.setItem(row, col_index, item)
-            col_index += 1
-            
+                row_data[header] = "-"
+        
+        # 百分位
         pcts_dict = data.get('pcts', {})
         for m in self.pct_months:
             val = pcts_dict.get(m)
+            header = f"近{m}月百分位"
             if val is not None:
-                item = SortableTableWidgetItem(f"{val:.2f}%")
-                if val <= 25:
-                    item.setForeground(QBrush(QColor("white")))
-                    item.setBackground(QBrush(QColor("#2ed573")))
-                    item.setFont(QFont("Arial", 10, QFont.Bold))
-                elif val >= 75: item.setForeground(QBrush(QColor("#ff4757")))
-                else: item.setForeground(QBrush(QColor("#57606f")))
+                row_data[header] = f"{val:.2f}%"
             else:
-                item = SortableTableWidgetItem("-")
-            table.setItem(row, col_index, item)
-            col_index += 1
+                row_data[header] = "-"
 
-        table.setItem(row, col_index, SortableTableWidgetItem(data.get('gztime')))
-
-        for col in range(len(self.headers) - 1):
-            if col not in [1, 5] and table.item(row, col): 
-                table.item(row, col).setTextAlignment(Qt.AlignCenter)
-            if not is_my_fund and col in [1, 5] and table.item(row, col):
-                table.item(row, col).setTextAlignment(Qt.AlignCenter)
-
-        table.setSortingEnabled(True)
+        row_data["更新时间"] = data.get('gztime', '')
+        
+        model.update_row(row, row_data)
 
     def dispatch_table_error(self, code, error_msg):
         row1 = self.get_row_by_code(self.table1, code)
-        if row1 != -1: self.populate_error(self.table1, row1, code, error_msg, is_my_fund=True)
+        if row1 != -1: 
+            self.populate_error(self.model1, row1, code, error_msg, is_my_fund=True)
             
         row2 = self.get_row_by_code(self.table2, code)
-        if row2 != -1: self.populate_error(self.table2, row2, code, error_msg, is_my_fund=False)
+        if row2 != -1: 
+            self.populate_error(self.model2, row2, code, error_msg, is_my_fund=False)
         
         for row3 in self.get_all_rows_by_code(self.table3, code):
-            self.populate_error(self.table3, row3, code, error_msg, is_my_fund=False)
+            self.populate_error(self.model3, row3, code, error_msg, is_my_fund=False)
 
-    def populate_error(self, table, row, code, error_msg, is_my_fund):
-        table.setSortingEnabled(False) 
+    def populate_error(self, model, row, code, error_msg, is_my_fund):
+        if row < 0 or row >= len(model.data_rows):
+            return
+        
+        row_data = model.get_row_data(row)
         
         if is_my_fund:
             config_name = self.config["funds_info"].get(code, {}).get("name")
             real_name = config_name if config_name else getattr(self, "all_funds_code_to_name", {}).get(code, "未知基金(暂无数据)")
-            table.setItem(row, 3, SortableTableWidgetItem(real_name))
+            row_data["基金名称"] = real_name
         
-        error_item = SortableTableWidgetItem(f"[{error_msg}]")
-        error_item.setForeground(QBrush(QColor("#a4b0be"))) 
-        table.setItem(row, 8, error_item) 
+        row_data["实时估值"] = f"[{error_msg}]"
         
-        for col in range(6, len(self.headers) - 1):
-            if col != 8: table.setItem(row, col, SortableTableWidgetItem("-"))
+        for d in self.drop_days:
+            row_data[f"近{d}日涨跌"] = "-"
+        for m in self.pct_months:
+            row_data[f"近{m}月百分位"] = "-"
         
-        for col in range(len(self.headers) - 1):
-            if col not in [1, 5] and table.item(row, col): 
-                table.item(row, col).setTextAlignment(Qt.AlignCenter)
-                
-        table.setSortingEnabled(True)
+        model.update_row(row, row_data)
 
     def on_fetch_finish(self):
         self.btn_refresh.setEnabled(True)

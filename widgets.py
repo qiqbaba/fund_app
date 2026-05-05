@@ -1,7 +1,6 @@
-# widgets.py
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QLabel, 
                                QGroupBox, QGridLayout, QCheckBox, QHBoxLayout, 
-                               QPushButton, QMessageBox, QTableWidgetItem)
+                               QPushButton, QMessageBox)
 
 class SettingsDialog(QDialog):
     """自定义设置弹窗"""
@@ -62,24 +61,3 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception:
             QMessageBox.warning(self, "错误", "请输入正确的数字格式！")
-
-
-class SortableTableWidgetItem(QTableWidgetItem):
-    """自定义表格元素，用于实现正确的数字/百分比/多行排序"""
-    def __lt__(self, other):
-        t1 = self.text()
-        t2 = other.text()
-
-        def get_val(text):
-            if '\n' in text:
-                text = text.split('\n')[-1]
-            c = text.replace('%', '').replace('+', '').replace(',', '').strip()
-            try: return float(c)
-            except ValueError: return text 
-
-        v1 = get_val(t1)
-        v2 = get_val(t2)
-
-        if type(v1) == type(v2): return v1 < v2
-        if isinstance(v1, str) and isinstance(v2, float): return True
-        else: return False
