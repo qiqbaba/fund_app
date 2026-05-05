@@ -23,7 +23,7 @@ from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget,
 class FundApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("场外基金深度监控 (实时估值 + 市场排行 + 多维指标)")
+        self.setWindowTitle("场外基金深度监控")
         self.resize(1400, 600)
         
         self.config = self.load_config()
@@ -115,8 +115,10 @@ class FundApp(QMainWindow):
         layout3.addWidget(self.table3)
         
         self.tabs.addTab(self.tab1, "⭐ 我的自选基金")
-        self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜 (已过滤同质化)")
-        self.tabs.addTab(self.tab3, "💎 估值榜 (PE/PB 最高最低)")
+        self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜")
+        self.tabs.setTabToolTip(1, "已过滤同质化")
+        self.tabs.addTab(self.tab3, "💎 估值榜")
+        self.tabs.setTabToolTip(2, "PE/PB 最高最低")
         
         layout.addWidget(self.tabs)
 
@@ -429,8 +431,18 @@ class FundApp(QMainWindow):
             
             pe_val = item.get("pe", "--")
             pb_val = item.get("pb", "--")
-            pe_pct = item.get("pe_percentile", "--")
-            display_info = f"PE:{pe_val} ({pe_pct}%)\nPB:{pb_val}"
+            pe_pct_str = item.get("pe_percentile", "--")
+            try:
+                pe_pct_val = float(pe_pct_str)
+                if pe_pct_val < 10: status = "极低估"
+                elif pe_pct_val < 30: status = "低估"
+                elif pe_pct_val > 90: status = "极高估"
+                elif pe_pct_val > 70: status = "高估"
+                else: status = "适中"
+            except:
+                status = "未知"
+            
+            display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val}"
             row_data["持有金额/\n收益率"] = display_info
             
             row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"

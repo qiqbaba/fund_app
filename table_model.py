@@ -206,13 +206,14 @@ class FundTableDelegate(QStyledItemDelegate):
         column = index.column()
         header = model.headers[column] if column < len(model.headers) else ""
         
-        # 对"基金名称"和"基金板块"列计算自适应高度
-        if header in ["基金名称", "基金板块"]:
+        # 对需要换行的列计算自适应高度
+        if header in ["基金名称", "基金板块", "持有金额/\n收益率"]:
             data = index.data(Qt.DisplayRole)
             if data:
                 doc = QTextDocument()
                 # 根据列类型设置合适的文本宽度
-                text_width = 176 if header == "基金名称" else 96  # 留出4px padding
+                width_map = {"基金名称": 176, "基金板块": 96, "持有金额/\n收益率": 81}
+                text_width = width_map.get(header, 100)
                 doc.setTextWidth(text_width)
                 doc.setHtml(f"<div>{str(data)}</div>")
                 doc.adjustSize()
@@ -234,6 +235,16 @@ class FundTableDelegate(QStyledItemDelegate):
                     return QColor("#27ae60")  # 低位绿色背景
             except ValueError:
                 pass
+        
+        # 估值榜状态颜色
+        if self.table_type == "valuation":
+            if header == "持有金额/\n收益率":
+                if "低估" in str(data):
+                    return QColor("#27ae60")  # 绿色背景
+                elif "高估" in str(data):
+                    return QColor("#e74c3c")  # 红色背景
+                elif "适中" in str(data):
+                    return QColor("#7f8c8d")  # 灰色背景
         return None  # 使用默认背景
     
     def _get_font(self, data, header):
@@ -274,6 +285,12 @@ class FundTableDelegate(QStyledItemDelegate):
                     return QColor("#ffffff")  # 极端值背景深，使用白色文字
             except ValueError:
                 pass
+        
+        # 估值榜状态颜色 - 使用白色文字增强对比
+        if self.table_type == "valuation":
+            if header == "持有金额/\n收益率":
+                if any(x in str(data) for x in ["低估", "高估", "适中"]):
+                    return QColor("#ffffff")
         
         return QColor("#000000")  # 默认黑色
 

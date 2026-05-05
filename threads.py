@@ -310,52 +310,80 @@ class ValuationFetcher(QThread):
             if data.get("Success") and data.get("Datas"):
                 all_indices = data["Datas"]
                 
-                # 过滤掉 PE/PB 为空的数据
+                # 增加百分位有效性检查并去重
                 valid_indices = []
+                seen_index_codes = set()
                 for item in all_indices:
                     try:
+                        idx_code = item.get("INDEXCODE")
+                        if not idx_code or idx_code in seen_index_codes:
+                            continue
+                            
                         pe = item.get("PETTM")
                         pb = item.get("PB")
+                        pe_pct = item.get("PEP")
+                        pb_pct = item.get("PBP")
+                        
                         if pe and pe != "--" and pb and pb != "--":
+                            seen_index_codes.add(idx_code)
+                            # 只有大于0的百分位才认为是有效数据
+                            item["pe_pct_float"] = float(pe_pct) * 100 if pe_pct and float(pe_pct) > 0 else -1
+                            item["pb_pct_float"] = float(pb_pct) * 100 if pb_pct and float(pb_pct) > 0 else -1
                             item["pe_float"] = float(pe)
                             item["pb_float"] = float(pb)
-                            item["pe_pct_float"] = float(item.get("PEP", 0)) * 100
                             valid_indices.append(item)
                     except: continue
 
-                # 排序获取四类 Top 10
-                high_pe = sorted(valid_indices, key=lambda x: x["pe_float"], reverse=True)[:10]
-                low_pe = sorted(valid_indices, key=lambda x: x["pe_float"])[:10]
-                high_pb = sorted(valid_indices, key=lambda x: x["pb_float"], reverse=True)[:10]
-                low_pb = sorted(valid_indices, key=lambda x: x["pb_float"])[:10]
+                # --- 核心逻辑：每类选出 30 个（去重后保证至少 10 个） ---
+                
+                # 1. PE 榜单
+                pe_valid = [x for x in valid_indices if x["pe_pct_float"] >= 0]
+                high_pe = sorted(pe_valid, key=lambda x: x["pe_pct_float"], reverse=True)[:30]
+                low_pe = sorted(pe_valid, key=lambda x: x["pe_pct_float"])[:30]
+                
+                # 2. PB 榜单
+                pb_valid = [x for x in valid_indices if x["pb_pct_float"] >= 0]
+                high_pb = sorted(pb_valid, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
+                low_pb = sorted(pb_valid, key=lambda x: x["pb_pct_float"])[:30]
 
-                combined = []
-                seen_codes = set()
+                combined_dict = {} # 最终合并后的字典
 
-                def add_to_list(source, tag):
+                def add_to_list(source, short_tag):
                     from utils import extract_fund_sector
                     for item in source:
-                        code = item["INDEXCODE"]
+                        index_code = item["INDEXCODE"]
                         index_name = item["INDEXNAME"]
-                        fund_code = self.find_fund_for_index(code, index_name)
+                        fund_code = self.find_fund_for_index(index_code, index_name)
+                        
+                        if fund_code in combined_dict:
+                            # 如果该基金已存在，合并标签
+                            existing = combined_dict[fund_code]
+                            if short_tag not in existing["tags"]:
+                                existing["tags"].append(short_tag)
+                                # 重新生成展示用的 tag
+                                existing["valuation_tag"] = "/".join(existing["tags"])
+                            continue
+
                         sector = extract_fund_sector(index_name)
                         res_item = {
-                            "bzdm": code, 
+                            "bzdm": index_code, 
                             "fund_code": fund_code,
                             "fund_name": index_name,
                             "pe": item["PETTM"],
                             "pb": item["PB"],
                             "pe_percentile": f"{item['pe_pct_float']:.2f}",
-                            "valuation_tag": tag,
+                            "valuation_tag": short_tag,
+                            "tags": [short_tag],
                             "extracted_sector": sector
                         }
-                        combined.append(res_item)
+                        combined_dict[fund_code] = res_item
 
-                add_to_list(high_pe, "🔥 PE最高")
-                add_to_list(low_pe, "❄️ PE最低")
-                add_to_list(high_pb, "🔥 PB最高")
-                add_to_list(low_pb, "❄️ PB最低")
+                # 按顺序加入，如果存在重合会自动合并标签
+                add_to_list(high_pe, "PE高")
+                add_to_list(low_pe, "PE低")
+                add_to_list(high_pb, "PB高")
+                add_to_list(low_pb, "PB低")
 
-                self.valuation_signal.emit(combined)
+                self.valuation_signal.emit(list(combined_dict.values()))
         except Exception:
             self.valuation_signal.emit([])
