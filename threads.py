@@ -92,21 +92,39 @@ class FundDataFetcher(QThread):
         if not saved_name:
             saved_name = self.code_to_name_dict.get(code, code)
             
-        data = {'fundcode': code, 'name': saved_name}
+        # 【修改点】：增加 gszzl 的默认值，防止 UI 显示 None
+        data = {
+            'fundcode': code, 
+            'name': saved_name,
+            'gszzl': "0.00",  # 默认设为 0.00
+            'gsz': "0.00",
+            'dwjz': "0.00"
+        }
         
         # ================= 1. 优先检查缓存中是否已有历史数据 =================
         history_success = False
+        history_data = None
+        
         if code in self.history_cache:
-            # 内存中已有数据，直接使用
-            data['new_history'] = self.history_cache[code]
-            history_success = True
+            # 内存中已有数据
+            history_data = self.history_cache[code]
         else:
             # 尝试从数据库中读取
             db_history = self.db.get_history(code)
             if db_history:
                 self.history_cache[code] = db_history
-                data['new_history'] = db_history
-                history_success = True
+                history_data = db_history
+
+        if history_data:
+            data['new_history'] = history_data
+            # 【修复核心】：从缓存/数据库读取数据时，必须像请求接口一样，补齐基础字段兜底！
+            if history_data.get('navs') and len(history_data['navs']) > 0:
+                latest_nav = str(history_data['navs'][0])
+                data['jzrq'] = history_data.get('jzrq', '')
+                data['dwjz'] = latest_nav
+                data['gsz'] = latest_nav  # 没有实时估值时（如QDII），用最新实际净值代替
+                data['gztime'] = f"{data['jzrq']} (实际净值)"
+            history_success = True
         
         # ================= 2. 如果本地没有历史数据，则从接口获取 =================
         if not history_success:
