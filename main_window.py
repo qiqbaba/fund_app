@@ -139,8 +139,8 @@ class FundApp(QMainWindow):
         self.drop_days = self.config.get("drop_days", [2, 4])
         self.pct_months = self.config.get("percentile_months", [1, 2, 3, 6, 12, 24])
         
-        for d in self.drop_days: self.headers.append(f"近{d}日涨跌")
-        for m in self.pct_months: self.headers.append(f"近{m}月百分位")
+        for d in self.drop_days: self.headers.append(f"近{d}日\n涨跌")
+        for m in self.pct_months: self.headers.append(f"近{m}月\n百分位")
         self.headers.extend(["更新时间", "操作"])
         
         hidden_cols = self.config.get("hidden_columns", [])
@@ -159,22 +159,30 @@ class FundApp(QMainWindow):
             # 配置列
             header_view = table.horizontalHeader()
             header_view.setSectionResizeMode(QHeaderView.Interactive)
-            header_view.setDefaultSectionSize(90)
+            header_view.setDefaultSectionSize(75)
+            header_view.setStyleSheet("QHeaderView::section { padding: 2px; }")
             
-            table.verticalHeader().setDefaultSectionSize(55)
+            # 减小行高，提高信息密度
+            table.verticalHeader().setDefaultSectionSize(38)
             
             # 设置列宽
-            table.setColumnWidth(0, 40)
-            table.setColumnWidth(1, 40)
-            table.setColumnWidth(2, 70)
-            table.setColumnWidth(3, 170)
-            table.setColumnWidth(4, 75)
-            table.setColumnWidth(5, 95)
-            table.setColumnWidth(7, 90)
-            table.setColumnWidth(9, 90)
+            table.setColumnWidth(0, 35)
+            table.setColumnWidth(1, 35)
+            table.setColumnWidth(2, 65)
+            table.setColumnWidth(3, 180)  # 基金名称，支持换行
+            table.setColumnWidth(4, 100)  # 基金板块，支持换行
+            table.setColumnWidth(5, 85)
+            table.setColumnWidth(6, 75)
+            table.setColumnWidth(7, 80)
+            table.setColumnWidth(8, 75)
+            table.setColumnWidth(9, 85)
+            
+            # 减小数据列宽度
+            for col_idx in range(10, len(self.headers) - 2):
+                table.setColumnWidth(col_idx, 65)
             
             time_col_index = len(self.headers) - 2
-            table.setColumnWidth(time_col_index, 140)
+            table.setColumnWidth(time_col_index, 130)
             
             action_col_index = len(self.headers) - 1
             header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
@@ -563,7 +571,7 @@ class FundApp(QMainWindow):
         drops_dict = data.get('drops', {})
         for d in self.drop_days:
             val = drops_dict.get(d)
-            header = f"近{d}日涨跌"
+            header = f"近{d}日\n涨跌"
             if val is not None:
                 row_data[header] = f"{val:+.2f}%"
             else:
@@ -573,7 +581,7 @@ class FundApp(QMainWindow):
         pcts_dict = data.get('pcts', {})
         for m in self.pct_months:
             val = pcts_dict.get(m)
-            header = f"近{m}月百分位"
+            header = f"近{m}月\n百分位"
             if val is not None:
                 row_data[header] = f"{val:.2f}%"
             else:
@@ -609,9 +617,9 @@ class FundApp(QMainWindow):
         row_data["实时估值"] = f"[{error_msg}]"
         
         for d in self.drop_days:
-            row_data[f"近{d}日涨跌"] = "-"
+            row_data[f"近{d}日\n涨跌"] = "-"
         for m in self.pct_months:
-            row_data[f"近{m}月百分位"] = "-"
+            row_data[f"近{m}月\n百分位"] = "-"
         
         model.update_row(row, row_data)
 

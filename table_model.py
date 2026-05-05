@@ -1,355 +1,343 @@
-"""
-QAbstractTableModel 和自定义代理，用于数据和显示的分离
-数据存储在字典列表中，颜色/字体等格式在渲染时动态计算
-"""
-
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QSize
-from PySide6.QtGui import QColor, QBrush, QFont
-from PySide6.QtWidgets import QStyledItemDelegate, QLineEdit, QCheckBox, QWidget, QHBoxLayout, QVBoxLayout, QPushButton
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize
+from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument
+from PySide6.QtWidgets import QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, QLineEdit, QPushButton, QHBoxLayout
 
 
 class FundTableModel(QAbstractTableModel):
-    """基金表格数据模型"""
+    """基金表格数据模型 - 基于 QAbstractTableModel"""
     
     def __init__(self, headers, parent=None):
         super().__init__(parent)
         self.headers = headers
-        self.data_rows = []  # 列表，每个元素是一行数据字典
-        
+        self.data_rows = []  # 存储行数据（每行是字典）
+    
     def rowCount(self, parent=QModelIndex()):
+        """返回行数"""
         return len(self.data_rows)
     
     def columnCount(self, parent=QModelIndex()):
+        """返回列数"""
         return len(self.headers)
     
-    def headerData(self, section, orientation, role):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.headers[section]
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        """返回表头数据"""
+        if role == Qt.DisplayRole:
+            if orientation == Qt.Horizontal:
+                return self.headers[section] if section < len(self.headers) else ""
         return None
     
-    def data(self, index, role):
-        if not index.isValid() or index.row() >= len(self.data_rows):
+    def data(self, index, role=Qt.DisplayRole):
+        """返回单元格数据"""
+        if not index.isValid():
             return None
         
-        row_data = self.data_rows[index.row()]
+        row = index.row()
         col = index.column()
         
-        if role == Qt.DisplayRole:
-            key = self.headers[col]
-            return row_data.get(key, "-")
+        if row < 0 or row >= len(self.data_rows) or col < 0 or col >= len(self.headers):
+            return None
         
-        elif role == Qt.UserRole:  # 原始数据，用于排序
-            key = self.headers[col]
-            return row_data.get(key, "-")
+        row_data = self.data_rows[row]
+        header = self.headers[col]
+        cell_value = row_data.get(header, "-")
         
-        elif role == Qt.TextAlignmentRole:
-            return Qt.AlignCenter
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            return str(cell_value) if cell_value is not None else "-"
+        
+        # 排序角色 - 返回可排序的值
+        if role == Qt.UserRole:
+            return self._get_sortable_value(cell_value)
         
         return None
     
-    def setData(self, index, value, role=Qt.EditRole):
-        if not index.isValid():
-            return False
+    def _get_sortable_value(self, cell_value):
+        """将显示值转换为可排序的值（用于排序）"""
+        if cell_value is None or cell_value == "-":
+            return (0, "")  # 负数优先级最低，空字符串排最后
         
-        row_data = self.data_rows[index.row()]
-        key = self.headers[index.column()]
+        cell_str = str(cell_value).strip()
         
-        if role == Qt.EditRole:
-            row_data[key] = value
-            self.dataChanged.emit(index, index, [role])
-            return True
+        # 处理百分比
+        if "%" in cell_str:
+            parts = cell_str.replace("%", "").split()
+            if parts:
+                try:
+                    return (2, float(parts[0]))
+                except ValueError:
+                    return (0, cell_str)
         
-        return False
+        # 处理数字
+        try:
+            return (2, float(cell_str))
+        except ValueError:
+            # 处理多行数据（如 "持有金额\n收益率"）
+            first_line = cell_str.split('\n')[0].strip()
+            try:
+                return (2, float(first_line.replace("%", "")))
+            except ValueError:
+                return (1, cell_str)
     
-    def flags(self, index):
-        return Qt.ItemIsSelectable | Qt.ItemIsEnabled
-    
-    def insertRow(self, row, parent=QModelIndex()):
-        self.beginInsertRows(parent, row, row)
-        self.data_rows.insert(row, {})
-        self.endInsertRows()
-        return True
-    
-    def removeRow(self, row, parent=QModelIndex()):
-        if 0 <= row < len(self.data_rows):
-            self.beginRemoveRows(parent, row, row)
-            self.data_rows.pop(row)
-            self.endRemoveRows()
-            return True
-        return False
+    def sort(self, column, order=Qt.AscendingOrder):
+        """排序"""
+        if column < 0 or column >= len(self.headers):
+            return
+        
+        header = self.headers[column]
+        
+        # 根据列排序数据
+        reverse = order == Qt.DescendingOrder
+        
+        def get_sort_key(row_data):
+            cell_value = row_data.get(header, "-")
+            return self._get_sortable_value(cell_value)
+        
+        self.layoutAboutToBeChanged.emit()
+        self.data_rows.sort(key=get_sort_key, reverse=reverse)
+        self.layoutChanged.emit()
     
     def add_row(self, row_data):
-        """在末尾添加一行"""
-        row = len(self.data_rows)
-        self.insertRow(row)
-        for col, header in enumerate(self.headers):
-            idx = self.index(row, col)
-            self.setData(idx, row_data.get(header, "-"), Qt.EditRole)
+        """添加一行数据"""
+        row_count = len(self.data_rows)
+        self.beginInsertRows(QModelIndex(), row_count, row_count)
+        self.data_rows.append(row_data)
+        self.endInsertRows()
     
     def update_row(self, row, row_data):
-        """更新指定行的所有数据"""
-        if 0 <= row < len(self.data_rows):
-            self.data_rows[row] = row_data
-            start_idx = self.index(row, 0)
-            end_idx = self.index(row, len(self.headers) - 1)
-            self.dataChanged.emit(start_idx, end_idx, [Qt.DisplayRole, Qt.ForegroundRole, Qt.FontRole, Qt.BackgroundRole])
+        """更新指定行的数据"""
+        if row < 0 or row >= len(self.data_rows):
+            return
+        
+        self.data_rows[row] = row_data
+        
+        # 通知视图该行已更改
+        start_index = self.index(row, 0)
+        end_index = self.index(row, len(self.headers) - 1)
+        self.dataChanged.emit(start_index, end_index)
+    
+    def clear_all(self):
+        """清空所有数据"""
+        if len(self.data_rows) > 0:
+            self.beginRemoveRows(QModelIndex(), 0, len(self.data_rows) - 1)
+            self.data_rows.clear()
+            self.endRemoveRows()
     
     def get_row_data(self, row):
-        """获取指定行的完整数据"""
-        if 0 <= row < len(self.data_rows):
-            return self.data_rows[row].copy()
-        return {}
-    
-    def set_row_data(self, row, data_dict):
-        """设置行数据字典"""
-        if 0 <= row < len(self.data_rows):
-            self.data_rows[row] = data_dict
+        """获取指定行的数据字典"""
+        if row < 0 or row >= len(self.data_rows):
+            return {}
+        return self.data_rows[row]
     
     def find_row_by_code(self, code):
-        """查找基金代码所在的行号"""
+        """查找指定代码的行号（返回第一个匹配的行号）"""
         for i, row_data in enumerate(self.data_rows):
             if row_data.get("基金代码") == code:
                 return i
         return -1
     
     def find_all_rows_by_code(self, code):
-        """查找基金代码所在的所有行号"""
+        """查找指定代码的所有行号"""
         rows = []
         for i, row_data in enumerate(self.data_rows):
             if row_data.get("基金代码") == code:
                 rows.append(i)
         return rows
-    
-    def clear_all(self):
-        """清空所有数据"""
-        if self.data_rows:
-            self.beginRemoveRows(QModelIndex(), 0, len(self.data_rows) - 1)
-            self.data_rows.clear()
-            self.endRemoveRows()
 
 
 class FundTableDelegate(QStyledItemDelegate):
-    """自定义代理，处理颜色、字体等动态渲染"""
+    """基金表格代理 - 用于自定义渲染和换行"""
     
     def __init__(self, table_type="my_fund", parent=None):
-        """
-        Args:
-            table_type: "my_fund" | "ranking" | "valuation"
-        """
         super().__init__(parent)
-        self.table_type = table_type
+        self.table_type = table_type  # my_fund, ranking, valuation
     
     def paint(self, painter, option, index):
-        """自定义绘制逻辑"""
+        """自定义绘制，支持换行"""
         if not index.isValid():
+            super().paint(painter, option, index)
             return
         
-        # 获取模型数据
+        # 获取单元格数据
+        data = index.data(Qt.DisplayRole)
+        if data is None:
+            data = ""
+        
+        # 获取表头以判断列类型
         model = index.model()
-        row_data = model.data_rows[index.row()] if hasattr(model, 'data_rows') else {}
-        col = index.column()
-        header = model.headers[col] if col < len(model.headers) else ""
+        column = index.column()
+        header = model.headers[column] if column < len(model.headers) else ""
         
-        # 获取文本内容
-        text = index.data(Qt.DisplayRole) or "-"
+        # 绘制背景
+        painter.fillRect(option.rect, option.palette.base())
         
-        # 根据列头决定颜色和字体
-        color, bg_color, font = self._get_cell_style(header, text, row_data)
-        
-        # 设置背景颜色
+        # 确定颜色
+        bg_color = self._get_background_color(data, header)
         if bg_color:
             painter.fillRect(option.rect, bg_color)
-        else:
-            painter.fillRect(option.rect, option.palette.base())
         
-        # 设置文本颜色和字体
-        painter.setPen(color)
+        # 确定字体
+        font = self._get_font(data, header)
         painter.setFont(font)
         
-        # 居中绘制文本
-        painter.drawText(option.rect, Qt.AlignCenter | Qt.TextWordWrap, text)
-    
-    def _get_cell_style(self, header, text, row_data):
-        """
-        根据列头和内容决定颜色、背景色和字体
-        返回 (color, bg_color, font)
-        """
-        default_color = QColor("#000000")
-        default_font = QFont("Arial", 10)
+        # 确定文本颜色
+        text_color = self._get_text_color(data, header)
+        painter.setPen(text_color)
         
-        # 涨跌类 - 红涨绿跌
-        if "涨跌" in header or header in ["今日收益/\n收益率", "实时估值"]:
-            try:
-                # 处理多行文本（如"100.5\n+2.3%"）
-                if '\n' in text:
-                    last_line = text.split('\n')[-1]
-                else:
-                    last_line = text
-                
-                val_str = last_line.replace('%', '').replace('+', '').replace(',', '').strip()
-                val = float(val_str)
-                
-                if val > 0:
-                    return QColor("#ff4757"), None, default_font  # 红色涨
-                elif val < 0:
-                    return QColor("#2ed573"), None, default_font  # 绿色跌
-                else:
-                    return default_color, None, default_font  # 无涨跌
-            except (ValueError, IndexError):
-                pass
-        
-        # 百分位 - 低位绿底，高位红字
-        elif "百分位" in header:
-            try:
-                val_str = text.replace('%', '').strip()
-                val = float(val_str)
-                
-                if val <= 25:
-                    bg = QColor("#2ed573")
-                    color = QColor("white")
-                    font = QFont("Arial", 10, QFont.Bold)
-                    return color, bg, font
-                elif val >= 75:
-                    return QColor("#ff4757"), None, default_font  # 红色高位
-                else:
-                    return QColor("#57606f"), None, default_font  # 灰色中位
-            except (ValueError, IndexError):
-                pass
-        
-        # 估值标签（高/低）
-        elif header == "估值":
-            if "高" in text:
-                return QColor("#ff4757"), None, QFont("Arial", 9, QFont.Bold)
-            elif "低" in text:
-                return QColor("#2ed573"), None, QFont("Arial", 9, QFont.Bold)
-        
-        # 基金名称（在估值表中根据估值颜色）
-        elif header == "基金名称":
-            if self.table_type == "valuation":
-                is_high = "高" in row_data.get("估值", "")
-                color = QColor("#ff4757") if is_high else QColor("#2ed573")
-                return color, None, default_font
-        
-        # 板块（在排行榜中根据是否为涨榜）
-        elif header == "基金板块" and self.table_type == "ranking":
-            # 可根据 row_data 判断是否为涨榜
-            pass
-        
-        return default_color, None, default_font
+        # 对"基金名称"和"基金板块"列启用换行
+        if header in ["基金名称", "基金板块"]:
+            # 使用QTextDocument处理换行和对齐
+            doc = QTextDocument()
+            doc.setTextWidth(option.rect.width() - 4)
+            doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0;'>{str(data)}</div>")
+            
+            painter.save()
+            painter.translate(option.rect.x() + 2, option.rect.y() + 2)
+            doc.drawContents(painter, QRect(0, 0, option.rect.width() - 4, option.rect.height() - 4))
+            painter.restore()
+        else:
+            # 其他列保持原来的绘制方式
+            painter.drawText(option.rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.AlignVCenter, str(data))
     
     def sizeHint(self, option, index):
-        """返回单元格的建议尺寸"""
-        return QSize(100, 55)
+        """计算单元格大小，支持换行自适应高度"""
+        if not index.isValid():
+            return super().sizeHint(option, index)
+        
+        model = index.model()
+        column = index.column()
+        header = model.headers[column] if column < len(model.headers) else ""
+        
+        # 对"基金名称"和"基金板块"列计算自适应高度
+        if header in ["基金名称", "基金板块"]:
+            data = index.data(Qt.DisplayRole)
+            if data:
+                doc = QTextDocument()
+                # 根据列类型设置合适的文本宽度
+                text_width = 176 if header == "基金名称" else 96  # 留出4px padding
+                doc.setTextWidth(text_width)
+                doc.setHtml(f"<div>{str(data)}</div>")
+                doc.adjustSize()
+                
+                # 返回自适应高度，加上padding
+                height = int(doc.size().height()) + 4
+                return QSize(text_width, max(height, 35))
+        
+        return super().sizeHint(option, index)
+    
+    def _get_background_color(self, data, header):
+        """根据数据返回背景色"""
+        if "百分位" in header:
+            try:
+                value = float(str(data).replace("%", "").strip())
+                if value >= 80:
+                    return QColor("#e74c3c")  # 高位红色背景
+                elif value <= 20:
+                    return QColor("#27ae60")  # 低位绿色背景
+            except ValueError:
+                pass
+        return None  # 使用默认背景
+    
+    def _get_font(self, data, header):
+        """根据数据返回字体"""
+        font = QFont()
+        font.setPointSize(9)
+        
+        # 对于百分位列，极端数值加粗
+        if "百分位" in header:
+            try:
+                value = float(str(data).replace("%", "").strip())
+                if value >= 80 or value <= 20:  # 高位或低位加粗
+                    font.setBold(True)
+            except ValueError:
+                pass
+        
+        return font
+    
+    def _get_text_color(self, data, header):
+        """根据数据返回文本颜色"""
+        # 涨跌幅 - 红涨绿跌
+        if "涨跌" in header or "收益" in header:
+            try:
+                value_str = str(data).strip().split('\n')[0]  # 取第一行
+                value = float(value_str.replace("%", "").replace("+", "").replace(",", ""))
+                if value > 0:
+                    return QColor("#e74c3c")  # 红色上涨
+                elif value < 0:
+                    return QColor("#27ae60")  # 绿色下跌
+            except ValueError:
+                pass
+        
+        # 百分位 - 如果有背景色，则使用白色文字以增强对比度
+        if "百分位" in header:
+            try:
+                value = float(str(data).replace("%", "").strip())
+                if value >= 80 or value <= 20:
+                    return QColor("#ffffff")  # 极端值背景深，使用白色文字
+            except ValueError:
+                pass
+        
+        return QColor("#000000")  # 默认黑色
 
 
 class CheckboxCellWidget(QWidget):
-    """自定义复选框单元格"""
+    """复选框单元格"""
     
-    def __init__(self, is_checked=False, on_change=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignCenter)
-        
         self.checkbox = QCheckBox()
-        self.checkbox.setChecked(is_checked)
-        self.on_change = on_change
-        
-        if on_change:
-            self.checkbox.stateChanged.connect(self._on_state_changed)
-        
+        layout = QHBoxLayout(self)
         layout.addWidget(self.checkbox)
+        layout.setContentsMargins(0, 0, 0, 0)
     
-    def _on_state_changed(self, state):
-        if self.on_change:
-            self.on_change(state == 2)  # 2 = Qt.Checked
-    
-    def set_checked(self, is_checked):
-        self.checkbox.blockSignals(True)
-        self.checkbox.setChecked(is_checked)
-        self.checkbox.blockSignals(False)
-    
-    def is_checked(self):
+    def isChecked(self):
         return self.checkbox.isChecked()
+    
+    def setChecked(self, checked):
+        self.checkbox.setChecked(checked)
 
 
 class HoldingInputWidget(QWidget):
-    """自定义持有信息输入单元格"""
+    """持有信息输入小部件"""
     
-    def __init__(self, amount="", yield_rate="", on_change=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 4, 5, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(2, 2, 2, 2)
         
-        self.amt_input = QLineEdit(str(amount) if amount else "")
-        self.amt_input.setPlaceholderText("金额")
-        self.amt_input.setStyleSheet("background: transparent; border: 1px solid #ced6e0; border-radius: 3px; padding: 1px 3px; font-size: 11px;")
+        self.amount_input = QLineEdit()
+        self.amount_input.setPlaceholderText("金额")
         
-        self.yld_input = QLineEdit(str(yield_rate) if yield_rate else "")
-        self.yld_input.setPlaceholderText("收益率%")
-        self.yld_input.setStyleSheet("background: transparent; border: 1px solid #ced6e0; border-radius: 3px; padding: 1px 3px; font-size: 11px;")
+        self.yield_input = QLineEdit()
+        self.yield_input.setPlaceholderText("收益率")
         
-        self.on_change = on_change
-        
-        if on_change:
-            self.amt_input.editingFinished.connect(lambda: self._on_amt_changed())
-            self.yld_input.editingFinished.connect(lambda: self._on_yld_changed())
-        
-        layout.addWidget(self.amt_input)
-        layout.addWidget(self.yld_input)
-    
-    def _on_amt_changed(self):
-        if self.on_change:
-            self.on_change('amount', self.amt_input.text())
-    
-    def _on_yld_changed(self):
-        if self.on_change:
-            self.on_change('yield_rate', self.yld_input.text())
-    
-    def set_amount(self, amount):
-        self.amt_input.blockSignals(True)
-        self.amt_input.setText(str(amount) if amount else "")
-        self.amt_input.blockSignals(False)
-    
-    def set_yield_rate(self, yield_rate):
-        self.yld_input.blockSignals(True)
-        self.yld_input.setText(str(yield_rate) if yield_rate else "")
-        self.yld_input.blockSignals(False)
+        layout.addWidget(self.amount_input)
+        layout.addWidget(self.yield_input)
     
     def get_amount(self):
-        return self.amt_input.text()
+        return self.amount_input.text()
     
-    def get_yield_rate(self):
-        return self.yld_input.text()
+    def get_yield(self):
+        return self.yield_input.text()
+    
+    def set_amount(self, amount):
+        self.amount_input.setText(str(amount))
+    
+    def set_yield(self, yield_rate):
+        self.yield_input.setText(str(yield_rate))
 
 
 class ActionButtonWidget(QWidget):
-    """自定义操作按钮单元格"""
+    """操作按钮小部件"""
     
-    def __init__(self, text="", style="", on_click=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(2, 2, 2, 2)
         
-        self.btn = QPushButton(text)
-        self.btn.setStyleSheet(style or "background-color: #2ed573; color: white; border-radius: 3px; padding:2px;")
-        self.on_click = on_click
-        
-        if on_click:
-            self.btn.clicked.connect(on_click)
-        
-        layout.addWidget(self.btn)
+        self.btn_action = QPushButton("操作")
+        layout.addWidget(self.btn_action)
     
     def set_text(self, text):
-        self.btn.setText(text)
+        self.btn_action.setText(text)
     
-    def set_enabled(self, enabled):
-        self.btn.setEnabled(enabled)
-    
-    def set_style(self, style):
-        self.btn.setStyleSheet(style)
-    
-    def get_button(self):
-        return self.btn
+    def get_text(self):
+        return self.btn_action.text()

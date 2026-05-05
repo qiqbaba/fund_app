@@ -79,12 +79,6 @@ class FundDataFetcher(QThread):
         self.code_to_name_dict = code_to_name_dict
         self.db = db if db else FundHistoryDB()  # 如果没传数据库实例就创建新的
 
-    def run(self):
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
-        })
-
     def fetch_single(self, code, session):
         if self.isInterruptionRequested(): return None
         
