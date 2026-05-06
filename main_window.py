@@ -8,7 +8,7 @@ import threading
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLineEdit, QPushButton, QTableView, QHeaderView, 
-                               QMessageBox, QTabWidget)
+                               QMessageBox, QTabWidget, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QFont
 
@@ -30,6 +30,7 @@ class FundApp(QMainWindow):
         self.history_cache = {} 
         self.all_funds_dict = {} 
         self.all_funds_code_to_name = {}
+        self.fund_search_list = []
         self.need_config_save = False 
         
         # 初始化数据库并从本地加载历史数据
@@ -51,8 +52,37 @@ class FundApp(QMainWindow):
 
         top_layout = QHBoxLayout()
         self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("输入 代码/名称[-板块] 添加, 例如: 004433-消费, 半导体设备-科技")
+        self.input_box.setPlaceholderText("输入基金代码/名称/拼音首字母搜索, 如: 白酒, bj, 004433-消费")
         self.input_box.setFixedHeight(35)
+        self.input_box.textChanged.connect(self.on_search_input_changed)
+        
+        # 搜索自动补全弹窗
+        self.search_popup = QListWidget(self)
+        self.search_popup.setWindowFlags(Qt.ToolTip)
+        self.search_popup.setFocusPolicy(Qt.NoFocus)
+        self.search_popup.setMouseTracking(True)
+        self.search_popup.itemClicked.connect(self.on_search_item_clicked)
+        self.search_popup.setStyleSheet("""
+            QListWidget {
+                background-color: #ffffff;
+                border: 1px solid #b2bec3;
+                border-radius: 4px;
+                font-size: 13px;
+                padding: 2px 0;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 6px 10px;
+                border-bottom: 1px solid #f1f2f6;
+                color: #2d3436;
+            }
+            QListWidget::item:last-child { border-bottom: none; }
+            QListWidget::item:hover {
+                background-color: #e8f4fd;
+                color: #0097e6;
+            }
+        """)
+        self.search_popup.hide()
         
         self.btn_add = QPushButton("➕ 添加到自选")
         self.btn_add.setFixedHeight(35)
@@ -276,14 +306,19 @@ class FundApp(QMainWindow):
 
     def load_all_funds_dict(self):
         self.all_funds_code_to_name = {} 
+        self.fund_search_list = []
         def fetch_dict():
             try:
                 res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=10)
                 match = re.search(r'var r = (\[.*\]);', res.text)
                 if match:
+                    search_list = []
                     for item in json.loads(match.group(1)):
                         self.all_funds_dict[item[2]] = item[0] 
-                        self.all_funds_code_to_name[item[0]] = item[2] 
+                        self.all_funds_code_to_name[item[0]] = item[2]
+                        # (代码, 拼音缩写, 名称, 类型, 全拼音)
+                        search_list.append((item[0], item[1], item[2], item[3], item[4]))
+                    self.fund_search_list = search_list
             except: pass
         threading.Thread(target=fetch_dict, daemon=True).start()
 
@@ -291,6 +326,76 @@ class FundApp(QMainWindow):
         for name, code in self.all_funds_dict.items():
             if name_query in name: return code
         return None
+
+    def on_search_input_changed(self, text):
+        """输入框文本变化时，执行模糊搜索并显示自动补全弹窗"""
+        text = text.strip()
+        if ',' in text or '，' in text:
+            self.search_popup.hide()
+            return
+        
+        query = text.split('-')[0].strip()
+        if len(query) < 1 or not self.fund_search_list:
+            self.search_popup.hide()
+            return
+        
+        # 完整6位代码不弹窗
+        if query.isdigit() and len(query) == 6:
+            self.search_popup.hide()
+            return
+        
+        query_upper = query.upper()
+        results = []
+        for item in self.fund_search_list:
+            code, abbr, name, fund_type, full_pinyin = item
+            if (query in name or query in code or
+                query_upper in abbr or query_upper in full_pinyin):
+                results.append(item)
+            if len(results) >= 15:
+                break
+        
+        if results:
+            self.search_popup.clear()
+            for code, abbr, name, fund_type, _ in results:
+                display = f"{code}  {name}  [{fund_type}]"
+                list_item = QListWidgetItem(display)
+                list_item.setData(Qt.UserRole, code)
+                list_item.setData(Qt.UserRole + 1, name)
+                self.search_popup.addItem(list_item)
+            
+            pos = self.input_box.mapToGlobal(self.input_box.rect().bottomLeft())
+            popup_h = min(380, len(results) * 28 + 8)
+            self.search_popup.setFixedSize(self.input_box.width(), popup_h)
+            self.search_popup.move(pos)
+            self.search_popup.show()
+        else:
+            self.search_popup.hide()
+
+    def on_search_item_clicked(self, item):
+        """点击补全列表项，直接添加基金到自选"""
+        code = item.data(Qt.UserRole)
+        name = item.data(Qt.UserRole + 1)
+        
+        # 提取用户输入的板块后缀
+        current_text = self.input_box.text()
+        parts = current_text.split('-', 1)
+        sector = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+        if not sector:
+            from utils import extract_fund_sector
+            sector = extract_fund_sector(name)
+        
+        self.search_popup.hide()
+        self.input_box.blockSignals(True)
+        self.input_box.clear()
+        self.input_box.blockSignals(False)
+        
+        if code not in self.config.get("funds_info", {}):
+            self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": ""}
+            self.save_config()
+            self.statusBar().showMessage(f"✅ 已添加: {name} ({code}) [板块: {sector}]", 5000)
+            self.refresh_data()
+        else:
+            self.statusBar().showMessage(f"⚠️ {name} ({code}) 已在自选列表中", 3000)
 
     def add_funds(self):
         text = self.input_box.text().strip()
