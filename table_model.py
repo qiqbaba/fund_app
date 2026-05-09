@@ -307,7 +307,7 @@ class FundTableDelegate(QStyledItemDelegate):
         font = QFont()
         font.setPointSize(9)
         
-        # 对于百分位列，极端数值加粗
+        # 对于百分位列，极端数值加粗；对于操作列，始终加粗
         if "百分位" in header:
             try:
                 value = float(str(data).replace("%", "").strip())
@@ -315,7 +315,9 @@ class FundTableDelegate(QStyledItemDelegate):
                     font.setBold(True)
             except ValueError:
                 pass
-        
+        elif header == "操作":
+            font.setBold(True)
+            
         return font
     
     def _get_text_color(self, data, header):
@@ -346,6 +348,16 @@ class FundTableDelegate(QStyledItemDelegate):
             if header == "持有金额/\n收益率":
                 if any(x in str(data) for x in ["低估", "高估", "适中"]):
                     return QColor("#ffffff")
+        
+        # 操作列颜色
+        if header == "操作":
+            data_str = str(data)
+            if "删除" in data_str:
+                return QColor("#e74c3c")  # 红色
+            elif "关注" in data_str:
+                return QColor("#0097e6")  # 蓝色
+            elif "已添加" in data_str:
+                return QColor("#95a5a6")  # 灰色
         
         return QColor("#000000")  # 默认黑色
 

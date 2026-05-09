@@ -70,9 +70,12 @@ class RankingFetcher(QThread):
             name = self.code_to_name_dict.get(code, "")
             if not name: continue
             
-            # 优先从 API 获取的板块库中匹配
+            # 优先从 API 获取的板块库中匹配，并再次通过 extract_fund_sector 标准化
             api_sector = self.shared_sector_map.get(code)
-            matched_sector = api_sector if api_sector else extract_fund_sector(name, code)
+            if api_sector:
+                matched_sector = extract_fund_sector(api_sector, code)
+            else:
+                matched_sector = extract_fund_sector(name, code)
                 
             if matched_sector not in seen_sectors:
                 seen_sectors.add(matched_sector)
@@ -380,14 +383,14 @@ class ValuationFetcher(QThread):
                     all_indices = data["Datas"]
                     
                     # 更新全局板块映射库（从官方指数名称提取）
+                    from utils import extract_fund_sector
                     for item in all_indices:
                         idx_name = item.get("INDEXNAME", "")
+                        idx_code = item.get("INDEXCODE", "")
                         if idx_name:
-                            # 清理名称：去掉“指数”、“等权”等，提取核心板块名
-                            sector = re.sub(r'(指数|等权|分级|全收益|财富|全指).*', '', idx_name)
+                            sector = extract_fund_sector(idx_name, idx_code)
                             if sector:
-                                 # 尝试寻找该指数对应的基金代码
-                                 self.shared_sector_map[item.get("INDEXCODE")] = sector
+                                 self.shared_sector_map[idx_code] = sector
                                  
                     valid_indices = []
                     seen_index_codes = set()

@@ -154,10 +154,18 @@ class FundApp(QMainWindow):
         
         layout.addWidget(self.tabs)
 
-        # 绑定双击事件
+        # 绑定点击和双击事件
+        self.table1.clicked.connect(lambda index: self.on_table_clicked(self.table1, index))
+        self.table2.clicked.connect(lambda index: self.on_table_clicked(self.table2, index))
+        self.table3.clicked.connect(lambda index: self.on_table_clicked(self.table3, index))
+        
         self.table1.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table1, index))
         self.table2.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table2, index))
         self.table3.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table3, index))
+
+        # 右键菜单
+        self.table1.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table1.customContextMenuRequested.connect(self.show_context_menu)
 
         self.apply_styles()
         
@@ -434,11 +442,60 @@ class FundApp(QMainWindow):
             self.refresh_data()
 
     def delete_fund(self, code):
-        if code in self.config.get("funds_info", {}):
-            del self.config["funds_info"][code]
-            self.save_config()
-            self.refresh_data()
+        name = self.config.get("funds_info", {}).get(code, {}).get("name", code)
+        reply = QMessageBox.question(self, "确认删除", f"确定要将基金 {name} ({code}) 从自选列表中删除吗？", 
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            if code in self.config.get("funds_info", {}):
+                del self.config["funds_info"][code]
+                self.save_config()
+                self.statusBar().showMessage(f"🗑️ 已删除: {name} ({code})", 3000)
+                self.refresh_data()
             
+    def on_table_clicked(self, table, index):
+        """处理表格点击事件，特别是操作列"""
+        column = index.column()
+        if column != len(self.headers) - 1: # 仅处理操作列
+            return
+            
+        model = table.model()
+        row = index.row()
+        row_data = model.get_row_data(row)
+        code = row_data.get("基金代码")
+        name = row_data.get("基金名称")
+        action = row_data.get("操作")
+        
+        if action == "❌删除":
+            self.delete_fund(code)
+        elif action == "➕关注":
+            sector = row_data.get("基金板块", "")
+            self.add_from_market(code, name, sector)
+
+    def show_context_menu(self, pos):
+        """显示右键菜单"""
+        index = self.table1.indexAt(pos)
+        if not index.isValid():
+            return
+            
+        row = index.row()
+        row_data = self.model1.get_row_data(row)
+        code = row_data.get("基金代码")
+        name = row_data.get("基金名称")
+        
+        from PySide6.QtGui import QAction, QMenu
+        menu = QMenu(self)
+        
+        delete_action = QAction(f"🗑️ 删除 {name}", self)
+        delete_action.triggered.connect(lambda: self.delete_fund(code))
+        
+        view_chart_action = QAction(f"📊 查看走势图", self)
+        view_chart_action.triggered.connect(lambda: self.show_detailed_chart(self.table1, index))
+        
+        menu.addAction(view_chart_action)
+        menu.addSeparator()
+        menu.addAction(delete_action)
+        
+        menu.exec(self.table1.viewport().mapToGlobal(pos))
     def add_from_market(self, code, name, sector):
         if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
             sector = extract_fund_sector(name, code)
@@ -499,6 +556,7 @@ class FundApp(QMainWindow):
             sector = self.config["funds_info"][code].get("sector", "")
             row_data["基金板块"] = sector
             row_data["持有金额/\n收益率"] = self.config["funds_info"][code].get("amount", "")
+            row_data["操作"] = "❌删除"
             
             self.model1.add_row(row_data)
         
@@ -694,17 +752,22 @@ class FundApp(QMainWindow):
         
         if is_my_fund:
             sector = self.config["funds_info"].get(code, {}).get("sector", "")
-            # 优先检查共享板块库是否有 API 更新的数据
-            api_sector = self.shared_sector_map.get(code)
-            if api_sector and api_sector != sector:
-                sector = api_sector
-                self.config["funds_info"][code]["sector"] = sector
-                self.need_config_save = True
             
-            if not sector or sector == "未知":
-                sector = extract_fund_sector(data.get('name', ""), code)
+            # 优先从 API 获取的板块库中匹配
+            api_sector = self.shared_sector_map.get(code)
+            if api_sector:
+                # 即使 API 有值，也通过标准化函数跑一遍
+                new_sector = extract_fund_sector(api_sector, code)
+            else:
+                # 否则，根据当前名称和已有板块，尝试获取最新的标准化板块名
+                # 如果当前是 "科创创业"，且新规则下应该是 "双创50"，这里会进行更新
+                new_sector = extract_fund_sector(new_name or sector, code)
+            
+            if new_sector and new_sector != sector:
+                sector = new_sector
                 self.config["funds_info"][code]["sector"] = sector
                 self.need_config_save = True
+                
             row_data["基金板块"] = sector
             
         row_data["昨日净值"] = data.get('dwjz')
@@ -758,6 +821,12 @@ class FundApp(QMainWindow):
 
         row_data["更新时间"] = data.get('gztime', '')
         
+        # 操作列
+        if is_my_fund:
+            row_data["操作"] = "❌删除"
+        else:
+            row_data["操作"] = "已添加" if code in self.config.get("funds_info", {}) else "➕关注"
+
         # 存储原始历史数据，用于迷你图和详情图
         history_data = self.history_cache.get(code, {})
         row_data["_history"] = history_data
