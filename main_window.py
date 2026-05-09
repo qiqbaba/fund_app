@@ -549,17 +549,25 @@ class FundApp(QMainWindow):
                 pe_val = item.get("pe", "--")
                 pb_val = item.get("pb", "--")
                 pe_pct_str = item.get("pe_percentile", "--")
-                try:
-                    pe_pct_val = float(pe_pct_str)
-                    if pe_pct_val < 10: status = "极低估"
-                    elif pe_pct_val < 30: status = "低估"
-                    elif pe_pct_val > 90: status = "极高估"
-                    elif pe_pct_val > 70: status = "高估"
-                    else: status = "适中"
-                except:
-                    status = "未知"
+                pb_pct_str = item.get("pb_percentile", "--")
                 
-                display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val}"
+                # 综合判断估值状态（优先看百分位）
+                status = "未知"
+                pct_val = -1
+                try:
+                    # 优先取 PE 百分位，若无效取 PB 百分位
+                    if pe_pct_str != "--": pct_val = float(pe_pct_str)
+                    elif pb_pct_str != "--": pct_val = float(pb_pct_str)
+                    
+                    if pct_val >= 0:
+                        if pct_val < 10: status = "极低估"
+                        elif pct_val < 30: status = "低估"
+                        elif pct_val > 90: status = "极高估"
+                        elif pct_val > 70: status = "高估"
+                        else: status = "适中"
+                except: pass
+                
+                display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val} ({pb_pct_str}%)"
                 row_data["持有金额/\n收益率"] = display_info
                 
                 row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"

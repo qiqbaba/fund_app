@@ -428,10 +428,16 @@ class ValuationFetcher(QThread):
                     high_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"], reverse=True)[:30]
                     low_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"])[:30]
                     
-                    # 2. PB 榜单
-                    pb_valid_list = [x for x in valid_indices if x["pb_pct_float"] >= 0]
-                    high_pb = sorted(pb_valid_list, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
-                    low_pb = sorted(pb_valid_list, key=lambda x: x["pb_pct_float"])[:30]
+                    # 2. PB 榜单 (增加兜底逻辑：若 API 缺失 PB 百分位，则按绝对值排序)
+                    pb_pct_list = [x for x in valid_indices if x["pb_pct_float"] >= 0]
+                    if pb_pct_list:
+                        high_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
+                        low_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"])[:30]
+                    else:
+                        # 兜底：使用 PB 绝对值排序
+                        pb_abs_list = [x for x in valid_indices if x["pb_float"] > 0]
+                        high_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"], reverse=True)[:30]
+                        low_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"])[:30]
 
                     combined_dict = {} # 最终合并后的字典
                     used_fund_codes = set()  # 全局去重：已被占用的基金代码
@@ -475,6 +481,7 @@ class ValuationFetcher(QThread):
                                 "pe": item.get("PETTM", "--"),
                                 "pb": item.get("PB", "--"),
                                 "pe_percentile": f"{item['pe_pct_float']:.2f}" if item['pe_pct_float'] >= 0 else "--",
+                                "pb_percentile": f"{item['pb_pct_float']:.2f}" if item['pb_pct_float'] >= 0 else "--",
                                 "valuation_tag": short_tag,
                                 "tags": [short_tag],
                                 "extracted_sector": sector
