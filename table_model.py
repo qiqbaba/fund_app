@@ -1,5 +1,5 @@
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize
-from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF
+from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, QLineEdit, QPushButton, QHBoxLayout
 
 
@@ -47,6 +47,10 @@ class FundTableModel(QAbstractTableModel):
         # 排序角色 - 返回可排序的值
         if role == Qt.UserRole:
             return self._get_sortable_value(cell_value)
+        
+        # 原始历史数据角色 - 用于绘制图表
+        if role == Qt.UserRole + 2:
+            return row_data.get("_navs", [])
         
         return None
     
@@ -193,9 +197,57 @@ class FundTableDelegate(QStyledItemDelegate):
             painter.translate(option.rect.x() + 2, option.rect.y() + 2)
             doc.drawContents(painter, QRect(0, 0, option.rect.width() - 4, option.rect.height() - 4))
             painter.restore()
+        elif header == "1年趋势":
+            # 绘制迷你走势图 (Sparkline)
+            navs = index.data(Qt.UserRole + 2) # 从 UserRole + 2 获取原始数据
+            if navs and isinstance(navs, list) and len(navs) > 1:
+                self._draw_sparkline(painter, option.rect, navs)
+            else:
+                painter.drawText(option.rect, Qt.AlignCenter, "-")
         else:
             # 其他列保持原来的绘制方式
             painter.drawText(option.rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.AlignVCenter, str(data))
+
+    def _draw_sparkline(self, painter, rect, navs):
+        """在单元格内绘制迷你趋势图"""
+        # 反转数据为正序 (原始数据通常是倒序)
+        data = navs[::-1]
+        if len(data) > 60: # 如果数据太多，进行采样以提高性能和显示效果
+            step = len(data) // 60
+            data = data[::step]
+            
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 计算绘图区域，留出边距
+        margin = 3
+        draw_rect = rect.adjusted(margin, margin, -margin, -margin)
+        
+        # 计算极值
+        max_v = max(data)
+        min_v = min(data)
+        v_range = max_v - min_v if max_v != min_v else 1.0
+        
+        # 转换坐标
+        points = QPolygonF()
+        x_step = draw_rect.width() / (len(data) - 1)
+        for i, v in enumerate(data):
+            x = draw_rect.left() + i * x_step
+            y = draw_rect.bottom() - (v - min_v) / v_range * draw_rect.height()
+            points.append(QPointF(x, y))
+            
+        # 画折线
+        painter.setPen(QPen(QColor("#0097e6"), 1.5))
+        painter.drawPolyline(points)
+        
+        # 画起终点（可选）
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#27ae60")) # 起点绿色
+        painter.drawEllipse(points[0], 2, 2)
+        painter.setBrush(QColor("#e74c3c")) # 终点红色
+        painter.drawEllipse(points[-1], 2, 2)
+        
+        painter.restore()
     
     def sizeHint(self, option, index):
         """计算单元格大小，支持换行自适应高度"""
@@ -221,6 +273,9 @@ class FundTableDelegate(QStyledItemDelegate):
                 # 返回自适应高度，加上padding
                 height = int(doc.size().height()) + 4
                 return QSize(text_width, max(height, 35))
+        
+        if header == "1年趋势":
+            return QSize(80, 35)
         
         return super().sizeHint(option, index)
     

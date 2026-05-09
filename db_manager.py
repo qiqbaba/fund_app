@@ -34,7 +34,7 @@ class FundHistoryDB:
     
     def get_history(self, fund_code):
         """获取基金的历史净值数据
-        返回: {'jzrq': str, 'navs': [float, ...]} 或 None
+        返回: {'jzrq': str, 'navs': [float, ...], 'dates': [str, ...]} 或 None
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -44,22 +44,41 @@ class FundHistoryDB:
             if row:
                 jzrq, nav_json = row
                 try:
-                    navs = json.loads(nav_json)
-                    return {'jzrq': jzrq, 'navs': navs}
-                except json.JSONDecodeError:
+                    data_list = json.loads(nav_json)
+                    if not data_list:
+                        return None
+                    
+                    # 检查是否是新格式 [[date, nav], ...]
+                    if isinstance(data_list[0], list) and len(data_list[0]) == 2:
+                        dates = [item[0] for item in data_list]
+                        navs = [item[1] for item in data_list]
+                        return {'jzrq': jzrq, 'navs': navs, 'dates': dates}
+                    else:
+                        # 旧格式 [nav, nav, ...]
+                        return {'jzrq': jzrq, 'navs': data_list, 'dates': []}
+                except (json.JSONDecodeError, IndexError):
                     return None
             return None
     
-    def save_history(self, fund_code, jzrq, navs):
+    def save_history(self, fund_code, jzrq, navs, dates=None):
         """保存或更新基金的历史净值数据
         fund_code: 基金代码
         jzrq: 净值日期
         navs: 净值列表 [float, float, ...]
+        dates: 日期列表 [str, str, ...]
         """
         import time
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            nav_json = json.dumps(navs)
+            
+            if dates and len(dates) == len(navs):
+                # 新格式：存储 [date, nav] 对
+                data_to_save = [[d, n] for d, n in zip(dates, navs)]
+            else:
+                # 兼容旧格式或无日期情况
+                data_to_save = navs
+                
+            nav_json = json.dumps(data_to_save)
             current_time = time.time()
             
             cursor.execute('''

@@ -139,33 +139,39 @@ class FundDataFetcher(QThread):
                 data['dwjz'] = latest_nav
                 data['gsz'] = latest_nav  # 没有实时估值时（如QDII），用最新实际净值代替
                 data['gztime'] = f"{data['jzrq']} (实际净值)"
-            history_success = True
+            
+            # 如果本地数据已经包含日期，则认为历史数据完整，不再重复抓取
+            if history_data.get('dates') and len(history_data['dates']) > 0:
+                history_success = True
         
-        # ================= 2. 如果本地没有历史数据，则从接口获取 =================
+        # ================= 2. 如果本地没有历史数据或数据不全（无日期），则从接口获取 =================
         if not history_success:
-            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=600&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=2000&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
             try:
                 r_his = session.get(his_url, timeout=5)
                 his_data = r_his.json()
-                navs = []
-                
                 if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
+                    navs = []
+                    dates = []
                     for item in his_data.get("Datas"):
                         try:
                             val = item.get("DWJZ")
-                            if val: navs.append(float(val))
+                            dt = item.get("FSRQ")
+                            if val: 
+                                navs.append(float(val))
+                                dates.append(dt)
                         except ValueError: pass
                     
                     if navs:
                         latest_item = his_data.get("Datas")[0]
                         latest_date = latest_item.get("FSRQ", "")
                         
-                        history_data = {'jzrq': latest_date, 'navs': navs}
+                        history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
                         data['new_history'] = history_data
                         self.history_cache[code] = history_data
                         
                         # 保存到数据库
-                        self.db.save_history(code, latest_date, navs)
+                        self.db.save_history(code, latest_date, navs, dates)
                         
                         data['jzrq'] = latest_date
                         data['dwjz'] = latest_item.get("DWJZ", "")
@@ -421,32 +427,45 @@ class ValuationFetcher(QThread):
                                 valid_indices.append(item)
                         except: continue
 
-                    # --- 核心逻辑：每类选出 30 个（去重后保证至少 10 个） ---
+                    # --- 核心逻辑：每类选出 10 个（去重并按板块分布，保证约 40 个） ---
                     
                     # 1. PE 榜单
                     pe_valid_list = [x for x in valid_indices if x["pe_pct_float"] >= 0]
-                    high_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"], reverse=True)[:30]
-                    low_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"])[:30]
+                    high_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"], reverse=True)
+                    low_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"])
                     
                     # 2. PB 榜单 (增加兜底逻辑：若 API 缺失 PB 百分位，则按绝对值排序)
                     pb_pct_list = [x for x in valid_indices if x["pb_pct_float"] >= 0]
                     if pb_pct_list:
-                        high_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
-                        low_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"])[:30]
+                        high_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"], reverse=True)
+                        low_pb = sorted(pb_pct_list, key=lambda x: x["pb_pct_float"])
                     else:
                         # 兜底：使用 PB 绝对值排序
                         pb_abs_list = [x for x in valid_indices if x["pb_float"] > 0]
-                        high_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"], reverse=True)[:30]
-                        low_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"])[:30]
+                        high_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"], reverse=True)
+                        low_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"])
 
                     combined_dict = {} # 最终合并后的字典
                     used_fund_codes = set()  # 全局去重：已被占用的基金代码
 
-                    def add_to_list(source, short_tag):
+                    def add_to_list(source, short_tag, limit=10):
                         from utils import extract_fund_sector
+                        count = 0
+                        seen_sectors = set()
+                        
                         for item in source:
+                            if count >= limit: break
+                            
                             index_code = item["INDEXCODE"]
                             index_name = item["INDEXNAME"]
+                            
+                            # 提取板块用于本类去重
+                            api_sector = self.shared_sector_map.get(index_code)
+                            sector = api_sector if api_sector else extract_fund_sector(index_name, "")
+                            
+                            if sector in seen_sectors:
+                                continue
+                                
                             fund_code = self.find_fund_for_index(index_code, index_name, used_fund_codes)
                             
                             # 如果没找到对应的基金代码（返回了指数代码本身），则跳过
@@ -455,7 +474,7 @@ class ValuationFetcher(QThread):
                             
                             if fund_code in combined_dict:
                                 existing = combined_dict[fund_code]
-                                existing_tags = existing["tags"]
+                                existing_tags = existing.get("tags", [])
                                 
                                 # 检查是否存在矛盾：同一维度（PE或PB）不能同时高和低
                                 is_conflict = False
@@ -471,9 +490,10 @@ class ValuationFetcher(QThread):
                                 if short_tag not in existing_tags:
                                     existing_tags.append(short_tag)
                                     existing["valuation_tag"] = "/".join(existing_tags)
+                                    count += 1
+                                    seen_sectors.add(sector)
                                 continue
 
-                            sector = extract_fund_sector(index_name, fund_code)
                             res_item = {
                                 "bzdm": index_code, 
                                 "fund_code": fund_code,
@@ -488,12 +508,14 @@ class ValuationFetcher(QThread):
                             }
                             combined_dict[fund_code] = res_item
                             used_fund_codes.add(fund_code)
+                            seen_sectors.add(sector)
+                            count += 1
 
                     # 按顺序加入
-                    add_to_list(high_pe, "PE高")
-                    add_to_list(low_pe, "PE低")
-                    add_to_list(high_pb, "PB高")
-                    add_to_list(low_pb, "PB低")
+                    add_to_list(high_pe, "PE高", 10)
+                    add_to_list(low_pe, "PE低", 10)
+                    add_to_list(high_pb, "PB高", 10)
+                    add_to_list(low_pb, "PB低", 10)
 
                     self.valuation_signal.emit(list(combined_dict.values()), True)
                     return # 成功获取，退出

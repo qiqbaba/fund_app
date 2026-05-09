@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QBrush, QFont
 
 # 引入拆分出去的模块
 from config import CONFIG_FILE
-from widgets import SettingsDialog
+from widgets import SettingsDialog, FundChartDialog
 from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
 from db_manager import FundHistoryDB
 from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
@@ -154,6 +154,11 @@ class FundApp(QMainWindow):
         
         layout.addWidget(self.tabs)
 
+        # 绑定双击事件
+        self.table1.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table1, index))
+        self.table2.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table2, index))
+        self.table3.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table3, index))
+
         self.apply_styles()
         
         # 初始化表格模型和代理 - 将在 rebuild_table_headers 中设置
@@ -175,7 +180,7 @@ class FundApp(QMainWindow):
         
         for d in self.drop_days: self.headers.append(f"近{d}日\n涨跌")
         for m in self.pct_months: self.headers.append(f"近{m}月\n百分位")
-        self.headers.extend(["更新时间", "操作"])
+        self.headers.extend(["1年趋势", "更新时间", "操作"])
         
         hidden_cols = self.config.get("hidden_columns", [])
         
@@ -212,8 +217,11 @@ class FundApp(QMainWindow):
             table.setColumnWidth(9, 85)
             
             # 减小数据列宽度
-            for col_idx in range(10, len(self.headers) - 2):
+            for col_idx in range(10, len(self.headers) - 3):
                 table.setColumnWidth(col_idx, 65)
+            
+            trend_col_index = len(self.headers) - 3
+            table.setColumnWidth(trend_col_index, 80)
             
             time_col_index = len(self.headers) - 2
             table.setColumnWidth(time_col_index, 130)
@@ -750,7 +758,32 @@ class FundApp(QMainWindow):
 
         row_data["更新时间"] = data.get('gztime', '')
         
+        # 存储原始历史数据，用于迷你图和详情图
+        history_data = self.history_cache.get(code, {})
+        row_data["_history"] = history_data
+        row_data["_navs"] = history_data.get('navs', [])
+        row_data["1年趋势"] = "" # 由 Delegate 绘制
+        
         model.update_row(row, row_data)
+
+    def show_detailed_chart(self, table, index):
+        """双击行显示详细走势图"""
+        model = table.model()
+        row = index.row()
+        row_data = model.get_row_data(row)
+        
+        code = row_data.get("基金代码")
+        name = row_data.get("基金名称", "未知")
+        history = row_data.get("_history", {})
+        if not history or not history.get("navs"):
+            # 如果内存没有，尝试从数据库获取
+            history = self.db.get_history(code) or {}
+            
+        if history and history.get("navs"):
+            dialog = FundChartDialog(code, name, history, self)
+            dialog.exec()
+        else:
+            QMessageBox.information(self, "提示", f"基金 {name} ({code}) 暂无历史走势数据，请等待刷新或手动刷新。")
 
     def dispatch_table_error(self, code, error_msg):
         row1 = self.get_row_by_code(self.table1, code)
