@@ -9,11 +9,12 @@ from db_manager import FundHistoryDB
 
 class RankingFetcher(QThread):
     """抓取当日指数/板块场外ETF涨跌排行榜的线程（带板块智能去重去同质化）"""
-    ranking_signal = Signal(list, list) 
+    ranking_signal = Signal(list, list, bool) # top_list, bot_list, is_success
 
-    def __init__(self, code_to_name_dict):
+    def __init__(self, code_to_name_dict, shared_sector_map=None):
         super().__init__()
         self.code_to_name_dict = code_to_name_dict
+        self.shared_sector_map = shared_sector_map if shared_sector_map is not None else {}
 
     def run(self):
         if not self.code_to_name_dict:
@@ -26,21 +27,35 @@ class RankingFetcher(QThread):
             except: pass
 
         headers = {"Referer": "http://fund.eastmoney.com/"}
-        try:
-            url_top = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=desc&canbuy=0&pageIndex=1&pageSize=200"
-            r_top = requests.get(url_top, headers=headers, timeout=5)
-            top_raw_list = r_top.json().get("Data", {}).get("list", [])
-            
-            url_bot = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=asc&canbuy=0&pageIndex=1&pageSize=200"
-            r_bot = requests.get(url_bot, headers=headers, timeout=5)
-            bot_raw_list = r_bot.json().get("Data", {}).get("list", [])
-            
-            top_list = self.filter_distinct_sectors(top_raw_list, 10)
-            bot_list = self.filter_distinct_sectors(bot_raw_list, 10)
-            
-            self.ranking_signal.emit(top_list, bot_list)
-        except Exception:
-            self.ranking_signal.emit([], [])
+        # 增加重试逻辑
+        for attempt in range(3):
+            try:
+                url_top = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=desc&canbuy=0&pageIndex=1&pageSize=200"
+                r_top = requests.get(url_top, headers=headers, timeout=5)
+                top_data = r_top.json()
+                
+                url_bot = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=asc&canbuy=0&pageIndex=1&pageSize=200"
+                r_bot = requests.get(url_bot, headers=headers, timeout=5)
+                bot_data = r_bot.json()
+                
+                if top_data.get("Data") and bot_data.get("Data"):
+                    top_raw_list = top_data["Data"].get("list", [])
+                    bot_raw_list = bot_data["Data"].get("list", [])
+                    
+                    top_list = self.filter_distinct_sectors(top_raw_list, 10)
+                    bot_list = self.filter_distinct_sectors(bot_raw_list, 10)
+                    
+                    self.ranking_signal.emit(top_list, bot_list, True)
+                    return # 成功获取，退出
+                elif "网络繁忙" in str(top_data) or "网络繁忙" in str(bot_data):
+                    time.sleep(1 + attempt)
+                    continue
+            except Exception:
+                time.sleep(1 + attempt)
+                continue
+        
+        # 多次重试失败
+        self.ranking_signal.emit([], [], False)
 
     def filter_distinct_sectors(self, fund_list, limit=10):
         from utils import extract_fund_sector
@@ -55,7 +70,9 @@ class RankingFetcher(QThread):
             name = self.code_to_name_dict.get(code, "")
             if not name: continue
             
-            matched_sector = extract_fund_sector(name)
+            # 优先从 API 获取的板块库中匹配
+            api_sector = self.shared_sector_map.get(code)
+            matched_sector = api_sector if api_sector else extract_fund_sector(name, code)
                 
             if matched_sector not in seen_sectors:
                 seen_sectors.add(matched_sector)
@@ -94,6 +111,10 @@ class FundDataFetcher(QThread):
             'gsz': "0.00",
             'dwjz': "0.00"
         }
+        
+        # 如果当前名称就是代码（说明没查到名称），且存在全局字典，则尝试补全
+        if data['name'] == code and self.code_to_name_dict:
+            data['name'] = self.code_to_name_dict.get(code, code)
         
         # ================= 1. 优先检查缓存中是否已有历史数据 =================
         history_success = False
@@ -155,29 +176,33 @@ class FundDataFetcher(QThread):
             except Exception:
                 pass
 
-        # ================= 3. 尝试获取实时估值数据 =================
+        # ================= 3. 尝试获取实时估值数据 (增加重试) =================
         timestamp = int(time.time() * 1000)
         url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={timestamp}"
         
-        try:
-            response = session.get(url, timeout=3)
-            if response.status_code == 200:
-                match = re.search(r'jsonpgz\((.*?)\);', response.text)
-                if match:
-                    gz_data = json.loads(match.group(1))
-                    if gz_data.get('name'):
-                        data['name'] = gz_data.get('name')
-                    
-                    if gz_data.get('gsz'):
-                        data['jzrq'] = gz_data.get('jzrq', data.get('jzrq'))
-                        data['dwjz'] = gz_data.get('dwjz', data.get('dwjz'))
-                        data['gsz'] = gz_data.get('gsz')
-                        data['gszzl'] = gz_data.get('gszzl')
-                        data['gztime'] = gz_data.get('gztime')
-        except Exception:
-            pass
+        for gz_attempt in range(2):
+            try:
+                response = session.get(url, timeout=3)
+                if response.status_code == 200:
+                    match = re.search(r'jsonpgz\((.*?)\);', response.text)
+                    if match:
+                        gz_data = json.loads(match.group(1))
+                        if gz_data.get('name'):
+                            data['name'] = gz_data.get('name')
+                        
+                        if gz_data.get('gsz'):
+                            data['jzrq'] = gz_data.get('jzrq', data.get('jzrq'))
+                            data['dwjz'] = gz_data.get('dwjz', data.get('dwjz'))
+                            data['gsz'] = gz_data.get('gsz')
+                            data['gszzl'] = gz_data.get('gszzl')
+                            data['gztime'] = gz_data.get('gztime')
+                        break # 成功
+                elif response.status_code == 404:
+                    break # 404 没必要重试
+            except Exception:
+                time.sleep(0.5)
 
-        if not history_success and 'gsz' not in data:
+        if not history_success and 'gztime' not in data:
             return {'error': True, 'code': code, 'msg': "暂无数据"}
 
         # ================= 4. 计算涨跌幅与百分位 =================
@@ -243,14 +268,17 @@ class FundDataFetcher(QThread):
 
 class ValuationFetcher(QThread):
     """抓取全市场指数估值榜 (PE/PB 最高/最低) 的线程"""
-    valuation_signal = Signal(list)
+    valuation_signal = Signal(list, bool) # valuation_list, is_success
 
-    def __init__(self, all_funds_dict):
+    def __init__(self, all_funds_dict, shared_sector_map=None):
         super().__init__()
         self.all_funds_dict = all_funds_dict
+        self.shared_sector_map = shared_sector_map if shared_sector_map is not None else {}
 
-    def find_fund_for_index(self, index_code, index_name):
-        """尝试为指数找到一个对应的场外联接基金代码，优先联接基金"""
+    def find_fund_for_index(self, index_code, index_name, used_fund_codes=None):
+        """尝试为指数找到一个对应的场外联接基金代码，优先联接基金。
+        used_fund_codes: 已被其他指数占用的基金代码集合，避免多个指数映射到同一基金。
+        """
         for _ in range(50):
             if self.all_funds_dict: break
             time.sleep(0.1)
@@ -264,35 +292,68 @@ class ValuationFetcher(QThread):
                         self.all_funds_dict[item[2]] = item[0]
             except: pass
 
-        # 清理指数名称，生成多个搜索关键词
-        clean_name = index_name.replace("指数", "").replace("CS", "").replace("TMT50", "TMT").strip()
-        short_name = clean_name[:2] if len(clean_name) >= 2 else ""
+        if used_fund_codes is None:
+            used_fund_codes = set()
+
+        # 清理指数名称，生成搜索关键词
+        # 移除“指”、“指数”、“成指”、“价格”、“全收益”等后缀，保留核心名称
+        clean_name = index_name.replace("指数", "").replace("CS", "").replace("TMT50", "TMT")
+        # 核心改进：移除“指”、“成指”等后缀，这些后缀在基金名称中通常不存在
+        clean_name = re.sub(r'(指数|成指|指|价格|全收益|财富|等权|分级)$', '', clean_name).strip()
+        
         search_keys = [index_code, index_name]
         if clean_name and clean_name != index_name:
             search_keys.append(clean_name)
-        if short_name:
-            search_keys.append(short_name)
+            
+        # 增加对“中小100”到“中小板”的兼容（历史遗留问题）
+        if "中小100" in clean_name:
+            search_keys.append(clean_name.replace("中小100", "中小板"))
+            
+        # 增加特定板块的别名扩展，提高匹配率
+        if "证保" in clean_name:
+            search_keys.append(clean_name.replace("证保", "证券保险"))
+        if "深证民营" in clean_name:
+            search_keys.append("民营")
+        if "中创" in clean_name:
+            search_keys.append("中创400")
 
         def is_otc_fund(code):
             """判断是否为场外基金代码（非场内ETF）"""
-            return code.startswith('0') or code.startswith('2') or code.startswith('3')
+            return code.startswith('0') or code.startswith('2') or code.startswith('3') or code.startswith('16') or code.startswith('50')
+
+        def is_available(code, fund_name):
+            """检查该基金代码是否尚未被其他指数占用，且排除后端收费基金"""
+            return code not in used_fund_codes and "后端" not in fund_name
 
         # 第一优先级：联接基金（一定是场外，数据接口一定支持）
         for key in search_keys:
             for name, code in self.all_funds_dict.items():
-                if key in name and "联接" in name:
+                if key in name and "联接" in name and is_available(code, name):
                     return code
 
-        # 第二优先级：场外ETF基金（代码以0开头等）
+        # 第二优先级：场外ETF基金
         for key in search_keys:
             for name, code in self.all_funds_dict.items():
-                if key in name and "ETF" in name and is_otc_fund(code):
+                if key in name and "ETF" in name and is_otc_fund(code) and is_available(code, name):
                     return code
 
-        # 第三优先级：任何ETF（包括场内，可能查不到实时估值但能查历史净值）
+        # 第三优先级：LOF基金或指数基金（场外）
         for key in search_keys:
             for name, code in self.all_funds_dict.items():
-                if key in name and "ETF" in name:
+                if key in name and ("LOF" in name or "指数" in name) and is_otc_fund(code) and is_available(code, name):
+                    return code
+
+        # 第四优先级：任何包含该关键词的场外基金（比如直接叫xx股票）
+        for key in search_keys:
+            if key == index_code: continue # 纯数字代码不作为宽泛匹配
+            for name, code in self.all_funds_dict.items():
+                if key in name and is_otc_fund(code) and is_available(code, name):
+                    return code
+
+        # 第五优先级：任何ETF（包括场内，可能查不到实时估值但能查历史净值）
+        for key in search_keys:
+            for name, code in self.all_funds_dict.items():
+                if key in name and "ETF" in name and is_available(code, name):
                     return code
                     
         return index_code  # 没找到就用指数代码兜底
@@ -304,86 +365,139 @@ class ValuationFetcher(QThread):
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15",
             "Referer": "https://unitmob.1234567.com.cn/"
         }
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            data = res.json()
-            if data.get("Success") and data.get("Datas"):
-                all_indices = data["Datas"]
-                
-                # 增加百分位有效性检查并去重
-                valid_indices = []
-                seen_index_codes = set()
-                for item in all_indices:
-                    try:
-                        idx_code = item.get("INDEXCODE")
-                        if not idx_code or idx_code in seen_index_codes:
-                            continue
+        # 增加重试逻辑
+        for attempt in range(3):
+            try:
+                res = requests.get(url, headers=headers, timeout=10)
+                data = res.json()
+                if data.get("Success") and data.get("Datas"):
+                    all_indices = data["Datas"]
+                    
+                    # 更新全局板块映射库（从官方指数名称提取）
+                    for item in all_indices:
+                        idx_name = item.get("INDEXNAME", "")
+                        if idx_name:
+                            # 清理名称：去掉“指数”、“等权”等，提取核心板块名
+                            sector = re.sub(r'(指数|等权|分级|全收益|财富|全指).*', '', idx_name)
+                            if sector:
+                                 # 尝试寻找该指数对应的基金代码
+                                 self.shared_sector_map[item.get("INDEXCODE")] = sector
+                                 
+                    valid_indices = []
+                    seen_index_codes = set()
+                    for item in all_indices:
+                        try:
+                            idx_code = item.get("INDEXCODE")
+                            if not idx_code or idx_code in seen_index_codes:
+                                continue
+                                
+                            pe = item.get("PETTM")
+                            pb = item.get("PB")
+                            pe_pct = item.get("PEP")
+                            pb_pct = item.get("PBP")
                             
-                        pe = item.get("PETTM")
-                        pb = item.get("PB")
-                        pe_pct = item.get("PEP")
-                        pb_pct = item.get("PBP")
-                        
-                        if pe and pe != "--" and pb and pb != "--":
-                            seen_index_codes.add(idx_code)
-                            # 只有大于0的百分位才认为是有效数据
-                            item["pe_pct_float"] = float(pe_pct) * 100 if pe_pct and float(pe_pct) > 0 else -1
-                            item["pb_pct_float"] = float(pb_pct) * 100 if pb_pct and float(pb_pct) > 0 else -1
-                            item["pe_float"] = float(pe)
-                            item["pb_float"] = float(pb)
-                            valid_indices.append(item)
-                    except: continue
+                            # 【核心修复】：放宽过滤条件，只要 PE 或 PB 有一个有效即保留
+                            pe_valid = pe and pe != "--" and pe != ""
+                            pb_valid = pb and pb != "--" and pb != ""
+                            
+                            if pe_valid or pb_valid:
+                                seen_index_codes.add(idx_code)
+                                
+                                # 百分位转换逻辑：如果是 "--" 则设为 -1 表示无效
+                                try:
+                                    item["pe_pct_float"] = float(pe_pct) * 100 if pe_pct is not None and pe_pct != "" and pe_pct != "--" else -1
+                                except: item["pe_pct_float"] = -1
+                                
+                                try:
+                                    item["pb_pct_float"] = float(pb_pct) * 100 if pb_pct is not None and pb_pct != "" and pb_pct != "--" else -1
+                                except: item["pb_pct_float"] = -1
+                                    
+                                try: item["pe_float"] = float(pe) if pe_valid else 0
+                                except: item["pe_float"] = 0
+                                
+                                try: item["pb_float"] = float(pb) if pb_valid else 0
+                                except: item["pb_float"] = 0
+                                
+                                valid_indices.append(item)
+                        except: continue
 
-                # --- 核心逻辑：每类选出 30 个（去重后保证至少 10 个） ---
-                
-                # 1. PE 榜单
-                pe_valid = [x for x in valid_indices if x["pe_pct_float"] >= 0]
-                high_pe = sorted(pe_valid, key=lambda x: x["pe_pct_float"], reverse=True)[:30]
-                low_pe = sorted(pe_valid, key=lambda x: x["pe_pct_float"])[:30]
-                
-                # 2. PB 榜单
-                pb_valid = [x for x in valid_indices if x["pb_pct_float"] >= 0]
-                high_pb = sorted(pb_valid, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
-                low_pb = sorted(pb_valid, key=lambda x: x["pb_pct_float"])[:30]
+                    # --- 核心逻辑：每类选出 30 个（去重后保证至少 10 个） ---
+                    
+                    # 1. PE 榜单
+                    pe_valid_list = [x for x in valid_indices if x["pe_pct_float"] >= 0]
+                    high_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"], reverse=True)[:30]
+                    low_pe = sorted(pe_valid_list, key=lambda x: x["pe_pct_float"])[:30]
+                    
+                    # 2. PB 榜单
+                    pb_valid_list = [x for x in valid_indices if x["pb_pct_float"] >= 0]
+                    high_pb = sorted(pb_valid_list, key=lambda x: x["pb_pct_float"], reverse=True)[:30]
+                    low_pb = sorted(pb_valid_list, key=lambda x: x["pb_pct_float"])[:30]
 
-                combined_dict = {} # 最终合并后的字典
+                    combined_dict = {} # 最终合并后的字典
+                    used_fund_codes = set()  # 全局去重：已被占用的基金代码
 
-                def add_to_list(source, short_tag):
-                    from utils import extract_fund_sector
-                    for item in source:
-                        index_code = item["INDEXCODE"]
-                        index_name = item["INDEXNAME"]
-                        fund_code = self.find_fund_for_index(index_code, index_name)
-                        
-                        if fund_code in combined_dict:
-                            # 如果该基金已存在，合并标签
-                            existing = combined_dict[fund_code]
-                            if short_tag not in existing["tags"]:
-                                existing["tags"].append(short_tag)
-                                # 重新生成展示用的 tag
-                                existing["valuation_tag"] = "/".join(existing["tags"])
-                            continue
+                    def add_to_list(source, short_tag):
+                        from utils import extract_fund_sector
+                        for item in source:
+                            index_code = item["INDEXCODE"]
+                            index_name = item["INDEXNAME"]
+                            fund_code = self.find_fund_for_index(index_code, index_name, used_fund_codes)
+                            
+                            # 如果没找到对应的基金代码（返回了指数代码本身），则跳过
+                            if fund_code == index_code:
+                                continue
+                            
+                            if fund_code in combined_dict:
+                                existing = combined_dict[fund_code]
+                                existing_tags = existing["tags"]
+                                
+                                # 检查是否存在矛盾：同一维度（PE或PB）不能同时高和低
+                                is_conflict = False
+                                tag_dimension = short_tag[:2]  # "PE" 或 "PB"
+                                for t in existing_tags:
+                                    if t[:2] == tag_dimension and t != short_tag:
+                                        is_conflict = True
+                                        break
+                                
+                                if is_conflict:
+                                    continue
+                                
+                                if short_tag not in existing_tags:
+                                    existing_tags.append(short_tag)
+                                    existing["valuation_tag"] = "/".join(existing_tags)
+                                continue
 
-                        sector = extract_fund_sector(index_name)
-                        res_item = {
-                            "bzdm": index_code, 
-                            "fund_code": fund_code,
-                            "fund_name": index_name,
-                            "pe": item["PETTM"],
-                            "pb": item["PB"],
-                            "pe_percentile": f"{item['pe_pct_float']:.2f}",
-                            "valuation_tag": short_tag,
-                            "tags": [short_tag],
-                            "extracted_sector": sector
-                        }
-                        combined_dict[fund_code] = res_item
+                            sector = extract_fund_sector(index_name, fund_code)
+                            res_item = {
+                                "bzdm": index_code, 
+                                "fund_code": fund_code,
+                                "fund_name": index_name,
+                                "pe": item.get("PETTM", "--"),
+                                "pb": item.get("PB", "--"),
+                                "pe_percentile": f"{item['pe_pct_float']:.2f}" if item['pe_pct_float'] >= 0 else "--",
+                                "valuation_tag": short_tag,
+                                "tags": [short_tag],
+                                "extracted_sector": sector
+                            }
+                            combined_dict[fund_code] = res_item
+                            used_fund_codes.add(fund_code)
 
-                # 按顺序加入，如果存在重合会自动合并标签
-                add_to_list(high_pe, "PE高")
-                add_to_list(low_pe, "PE低")
-                add_to_list(high_pb, "PB高")
-                add_to_list(low_pb, "PB低")
+                    # 按顺序加入
+                    add_to_list(high_pe, "PE高")
+                    add_to_list(low_pe, "PE低")
+                    add_to_list(high_pb, "PB高")
+                    add_to_list(low_pb, "PB低")
 
-                self.valuation_signal.emit(list(combined_dict.values()))
-        except Exception:
-            self.valuation_signal.emit([])
+                    self.valuation_signal.emit(list(combined_dict.values()), True)
+                    return # 成功获取，退出
+                elif data.get("ErrMsg") == "网络繁忙，请稍后重试！" or not data.get("Success"):
+                    time.sleep(1 + attempt)
+                    continue
+                else:
+                    break
+            except Exception:
+                time.sleep(1 + attempt)
+                continue
+        
+        # 多次重试失败
+        self.valuation_signal.emit([], False)

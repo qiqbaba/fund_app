@@ -127,7 +127,7 @@
         },
         "019862": {
             "name": "鹏华上证科创100ETF联接C",
-            "sector": "",
+            "sector": "科创50",
             "is_held": false,
             "amount": "",
             "yield_rate": ""
@@ -299,6 +299,13 @@
         "007665": {
             "name": "永赢创业板指数发起式C",
             "sector": "创业板"
+        },
+        "014764": {
+            "name": "014764",
+            "sector": "0147",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
         }
     },
     "drop_days": [

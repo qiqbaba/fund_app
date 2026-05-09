@@ -19,6 +19,7 @@ from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
 from db_manager import FundHistoryDB
 from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
                          HoldingInputWidget, ActionButtonWidget)
+from utils import extract_fund_sector
 
 class FundApp(QMainWindow):
     def __init__(self):
@@ -31,6 +32,7 @@ class FundApp(QMainWindow):
         self.all_funds_dict = {} 
         self.all_funds_code_to_name = {}
         self.fund_search_list = []
+        self.shared_sector_map = {} # 新增：全局板块 API 缓存映射库
         self.need_config_save = False 
         
         # 初始化数据库并从本地加载历史数据
@@ -381,8 +383,7 @@ class FundApp(QMainWindow):
         parts = current_text.split('-', 1)
         sector = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
         if not sector:
-            from utils import extract_fund_sector
-            sector = extract_fund_sector(name)
+            sector = extract_fund_sector(name, code)
         
         self.search_popup.hide()
         self.input_box.blockSignals(True)
@@ -432,8 +433,7 @@ class FundApp(QMainWindow):
             
     def add_from_market(self, code, name, sector):
         if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
-            from utils import extract_fund_sector
-            sector = extract_fund_sector(name)
+            sector = extract_fund_sector(name, code)
 
         if code not in self.config.get("funds_info", {}):
             self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": ""}
@@ -495,64 +495,76 @@ class FundApp(QMainWindow):
             self.model1.add_row(row_data)
         
         # 启动排行数据获取
-        self.ranking_fetcher = RankingFetcher(self.all_funds_code_to_name) 
+        self.ranking_fetcher = RankingFetcher(self.all_funds_code_to_name, self.shared_sector_map) 
         self.ranking_fetcher.ranking_signal.connect(self.on_ranking_fetched)
         self.ranking_fetcher.start()
 
-        self.valuation_fetcher = ValuationFetcher(self.all_funds_dict)
+        self.valuation_fetcher = ValuationFetcher(self.all_funds_dict, self.shared_sector_map)
         self.valuation_fetcher.valuation_signal.connect(self.on_valuation_fetched)
         self.valuation_fetcher.start()
+        
+        self.statusBar().showMessage("正在抓取市场及估值数据...")
 
-    def on_valuation_fetched(self, valuation_list):
+    def on_valuation_fetched(self, valuation_list, is_success):
+        if not is_success:
+            if self.model3.rowCount() == 0:
+                self.statusBar().showMessage("估值榜获取失败（网络繁忙或 API 暂时不可用）")
+            else:
+                self.statusBar().showMessage("估值榜更新失败，显示历史缓存数据")
+            return
+
         self.model3.clear_all()
         
         self.valuation_mapping = {} # index_code -> fund_code
         fetch_codes = []
 
-        for i, item in enumerate(valuation_list):
-            index_code = item.get("bzdm")
-            index_name = item.get("fund_name", "未知名称")
-            
-            fund_code = item.get("fund_code", index_code)
-            self.valuation_mapping[fund_code] = index_code
-            fetch_codes.append(fund_code)
-            
-            row_data = {}
-            for header in self.headers:
-                row_data[header] = "-"
-            
-            row_data["序号"] = str(i + 1)
-            
-            # col 1: 估值标签（PE最高/PB最低等）
-            tag_text = item.get("valuation_tag", "")
-            row_data["持有"] = tag_text
-            
-            row_data["基金代码"] = fund_code
-            row_data["基金名称"] = index_name
-            
-            # col 4: 基金板块（实际板块名称）
-            sector = item.get("extracted_sector", "")
-            row_data["基金板块"] = sector
-            
-            pe_val = item.get("pe", "--")
-            pb_val = item.get("pb", "--")
-            pe_pct_str = item.get("pe_percentile", "--")
-            try:
-                pe_pct_val = float(pe_pct_str)
-                if pe_pct_val < 10: status = "极低估"
-                elif pe_pct_val < 30: status = "低估"
-                elif pe_pct_val > 90: status = "极高估"
-                elif pe_pct_val > 70: status = "高估"
-                else: status = "适中"
-            except:
-                status = "未知"
-            
-            display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val}"
-            row_data["持有金额/\n收益率"] = display_info
-            
-            row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"
-            
-            self.model3.add_row(row_data)
+        if not valuation_list:
+            self.statusBar().showMessage("估值榜暂无符合条件的数据")
+        else:
+            for i, item in enumerate(valuation_list):
+                index_code = item.get("bzdm")
+                index_name = item.get("fund_name", "未知名称")
+                
+                fund_code = item.get("fund_code", index_code)
+                self.valuation_mapping[fund_code] = index_code
+                fetch_codes.append(fund_code)
+                
+                row_data = {}
+                for header in self.headers:
+                    row_data[header] = "-"
+                
+                row_data["序号"] = str(i + 1)
+                
+                # col 1: 估值标签（PE最高/PB最低等）
+                tag_text = item.get("valuation_tag", "")
+                row_data["持有"] = tag_text
+                
+                row_data["基金代码"] = fund_code
+                row_data["基金名称"] = index_name
+                
+                # col 4: 基金板块（实际板块名称）
+                sector = item.get("extracted_sector", "")
+                row_data["基金板块"] = sector
+                
+                pe_val = item.get("pe", "--")
+                pb_val = item.get("pb", "--")
+                pe_pct_str = item.get("pe_percentile", "--")
+                try:
+                    pe_pct_val = float(pe_pct_str)
+                    if pe_pct_val < 10: status = "极低估"
+                    elif pe_pct_val < 30: status = "低估"
+                    elif pe_pct_val > 90: status = "极高估"
+                    elif pe_pct_val > 70: status = "高估"
+                    else: status = "适中"
+                except:
+                    status = "未知"
+                
+                display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val}"
+                row_data["持有金额/\n收益率"] = display_info
+                
+                row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"
+                
+                self.model3.add_row(row_data)
         
         # 启动数据抓取（合并之前的自选和排行榜）
         my_funds = list(self.config.get("funds_info", {}).keys())
@@ -569,7 +581,14 @@ class FundApp(QMainWindow):
         self.fetcher.finish_signal.connect(self.on_fetch_finish)
         self.fetcher.start()
 
-    def on_ranking_fetched(self, top_list, bot_list):
+    def on_ranking_fetched(self, top_list, bot_list, is_success):
+        if not is_success:
+            if self.model2.rowCount() == 0:
+                self.statusBar().showMessage("排行榜获取失败（网络繁忙或 API 暂时不可用）")
+            else:
+                self.statusBar().showMessage("排行榜更新失败，显示历史缓存数据")
+            return
+
         self.model2.clear_all()
         
         market_codes = []
@@ -649,10 +668,27 @@ class FundApp(QMainWindow):
         row_data = model.get_row_data(row)
         code = data.get('fundcode')
         
-        row_data["基金名称"] = data.get('name')
+        # 保护逻辑：如果新数据中的名称是代码本身（说明没查到名称），且当前已有名称，则不覆盖
+        new_name = data.get('name')
+        if new_name:
+            if new_name == code and row_data.get("基金名称") and row_data["基金名称"] != "加载中..." and not row_data["基金名称"].isdigit():
+                pass # 保持原样
+            else:
+                row_data["基金名称"] = new_name
         
         if is_my_fund:
             sector = self.config["funds_info"].get(code, {}).get("sector", "")
+            # 优先检查共享板块库是否有 API 更新的数据
+            api_sector = self.shared_sector_map.get(code)
+            if api_sector and api_sector != sector:
+                sector = api_sector
+                self.config["funds_info"][code]["sector"] = sector
+                self.need_config_save = True
+            
+            if not sector or sector == "未知":
+                sector = extract_fund_sector(data.get('name', ""), code)
+                self.config["funds_info"][code]["sector"] = sector
+                self.need_config_save = True
             row_data["基金板块"] = sector
             
         row_data["昨日净值"] = data.get('dwjz')
