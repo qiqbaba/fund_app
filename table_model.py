@@ -92,8 +92,20 @@ class FundTableModel(QAbstractTableModel):
         reverse = order == Qt.DescendingOrder
         
         def get_sort_key(row_data):
+            # 获取置顶状态
+            is_pinned = row_data.get("_is_pinned", False)
+            
             cell_value = row_data.get(header, "-")
-            return self._get_sortable_value(cell_value)
+            val = self._get_sortable_value(cell_value)
+            
+            # 置顶逻辑：置顶项始终在最上方
+            # 在升序排列时，置顶项优先级为 0，普通项为 1
+            # 在降序排列时，置顶项优先级为 1，普通项为 0
+            pin_priority = 1 if is_pinned else 0
+            if not reverse:
+                pin_priority = 0 if is_pinned else 1
+                
+            return (pin_priority, val)
         
         self.layoutAboutToBeChanged.emit()
         self.data_rows.sort(key=get_sort_key, reverse=reverse)
@@ -175,6 +187,14 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 确定颜色
         bg_color = self._get_background_color(data, header)
+        
+        # 置顶行背景色高亮（浅蓝色）
+        is_pinned = index.model().get_row_data(index.row()).get("_is_pinned", False)
+        if is_pinned and header != "操作":
+            # 仅当该列没有特定的背景色（如百分位红绿）时，才使用置顶高亮色
+            if not bg_color:
+                bg_color = QColor("#f0f7ff") 
+            
         if bg_color:
             painter.fillRect(option.rect, bg_color)
         
@@ -206,7 +226,11 @@ class FundTableDelegate(QStyledItemDelegate):
                 painter.drawText(option.rect, Qt.AlignCenter, "-")
         else:
             # 其他列保持原来的绘制方式
-            painter.drawText(option.rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.AlignVCenter, str(data))
+            text = str(data)
+            # 在序号列显示置顶标识
+            if header == "序号" and is_pinned:
+                text = "📌"
+            painter.drawText(option.rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.AlignVCenter, text)
 
     def _draw_sparkline(self, painter, rect, navs):
         """在单元格内绘制迷你趋势图"""

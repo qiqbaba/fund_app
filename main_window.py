@@ -8,9 +8,10 @@ import threading
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLineEdit, QPushButton, QTableView, QHeaderView, 
-                               QMessageBox, QTabWidget, QListWidget, QListWidgetItem)
+                               QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
+                               QMenu)
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QBrush, QFont
+from PySide6.QtGui import QColor, QBrush, QFont, QAction
 
 # 引入拆分出去的模块
 from config import CONFIG_FILE
@@ -481,21 +482,37 @@ class FundApp(QMainWindow):
         row_data = self.model1.get_row_data(row)
         code = row_data.get("基金代码")
         name = row_data.get("基金名称")
+        is_pinned = row_data.get("_is_pinned", False)
         
-        from PySide6.QtGui import QAction, QMenu
         menu = QMenu(self)
-        
-        delete_action = QAction(f"🗑️ 删除 {name}", self)
-        delete_action.triggered.connect(lambda: self.delete_fund(code))
         
         view_chart_action = QAction(f"📊 查看走势图", self)
         view_chart_action.triggered.connect(lambda: self.show_detailed_chart(self.table1, index))
         
+        pin_text = "📌 取消置顶" if is_pinned else "📌 置顶基金"
+        pin_action = QAction(pin_text, self)
+        pin_action.triggered.connect(lambda: self.toggle_pin_fund(code))
+        
+        delete_action = QAction(f"🗑️ 删除 {name}", self)
+        delete_action.triggered.connect(lambda: self.delete_fund(code))
+        
         menu.addAction(view_chart_action)
+        menu.addAction(pin_action)
         menu.addSeparator()
         menu.addAction(delete_action)
         
         menu.exec(self.table1.viewport().mapToGlobal(pos))
+
+    def toggle_pin_fund(self, code):
+        """切换置顶状态"""
+        if code in self.config.get("funds_info", {}):
+            current_state = self.config["funds_info"][code].get("is_pinned", False)
+            self.config["funds_info"][code]["is_pinned"] = not current_state
+            self.save_config()
+            
+            # 刷新表格数据
+            self.refresh_data()
+            self.statusBar().showMessage("✅ 已更新置顶状态", 2000)
     def add_from_market(self, code, name, sector):
         if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
             sector = extract_fund_sector(name, code)
@@ -536,7 +553,10 @@ class FundApp(QMainWindow):
         self.btn_refresh.setEnabled(False)
         self.latest_data_time = ""  # 重置数据源时间
         
-        funds = list(self.config.get("funds_info", {}).keys())
+        # 获取基金列表，并按照置顶状态进行初始排序（置顶在前）
+        funds = sorted(list(self.config.get("funds_info", {}).keys()), 
+                       key=lambda x: self.config["funds_info"][x].get("is_pinned", False), 
+                       reverse=True)
         
         # 清空现有数据
         self.model1.clear_all()
@@ -553,12 +573,18 @@ class FundApp(QMainWindow):
             row_data["基金代码"] = code
             row_data["基金名称"] = "加载中..."
             
-            sector = self.config["funds_info"][code].get("sector", "")
-            row_data["基金板块"] = sector
-            row_data["持有金额/\n收益率"] = self.config["funds_info"][code].get("amount", "")
+            fund_info = self.config["funds_info"][code]
+            row_data["基金板块"] = fund_info.get("sector", "")
+            row_data["持有金额/\n收益率"] = fund_info.get("amount", "")
             row_data["操作"] = "❌删除"
+            row_data["_is_pinned"] = fund_info.get("is_pinned", False)
             
             self.model1.add_row(row_data)
+        
+        # 加载完成后，如果表格开启了排序，需要手动触发一次排序以应用置顶逻辑
+        if self.table1.horizontalHeader().sortIndicatorOrder() != -1:
+            self.model1.sort(self.table1.horizontalHeader().sortIndicatorSection(), 
+                             self.table1.horizontalHeader().sortIndicatorOrder())
         
         # 启动排行数据获取
         self.ranking_fetcher = RankingFetcher(self.all_funds_code_to_name, self.shared_sector_map) 
@@ -769,6 +795,7 @@ class FundApp(QMainWindow):
                 self.need_config_save = True
                 
             row_data["基金板块"] = sector
+            row_data["_is_pinned"] = self.config["funds_info"].get(code, {}).get("is_pinned", False)
             
         row_data["昨日净值"] = data.get('dwjz')
         row_data["净值日期"] = data.get('jzrq')

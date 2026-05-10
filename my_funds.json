@@ -299,6 +299,14 @@
         "007665": {
             "name": "永赢创业板指数发起式C",
             "sector": "创业板"
+        },
+        "007606": {
+            "name": "嘉实沪深300红利低波动ETF联接C",
+            "sector": "沪深300",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": "",
+            "is_pinned": true
         }
     },
     "drop_days": [
