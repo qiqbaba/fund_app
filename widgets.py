@@ -225,9 +225,11 @@ class FundChartDialog(QDialog):
         start_nav = self.current_navs[0] if self.current_navs else 1.0
         current_pcts = [(nav - start_nav) / start_nav * 100 for nav in self.current_navs]
         
-        # 计算百分比极值
+        # 计算百分比极值与数值极值
         max_pct = max(current_pcts) if current_pcts else 0
         min_pct = min(current_pcts) if current_pcts else 0
+        max_nav = max(self.current_navs) if self.current_navs else 1.0
+        min_nav = min(self.current_navs) if self.current_navs else 1.0
         range_pct = max_pct - min_pct if max_pct != min_pct else 1.0
         
         # 留白 15%
@@ -328,13 +330,19 @@ class FundChartDialog(QDialog):
                 # 3. 绘制浮窗
                 tip_date = self.current_dates[idx]
                 tip_pct = current_pcts[idx]
-                tip_text = f"日期: {tip_date}\n涨跌: {tip_pct:+.2f}%"
+                
+                # 计算与期间最高/最低的差距
+                v_curr = self.current_navs[idx]
+                dist_high = (v_curr - max_nav) / max_nav * 100 if max_nav != 0 else 0
+                dist_low = (v_curr - min_nav) / min_nav * 100 if min_nav != 0 else 0
+                
+                tip_text = f"日期: {tip_date}\n涨跌: {tip_pct:+.2f}%\n距最高: {dist_high:+.2f}%\n距最低: {dist_low:+.2f}%"
                 
                 # 计算文字尺寸以确定浮窗大小
                 painter.setFont(QFont("Segoe UI", 9))
                 fm = painter.fontMetrics()
                 # 稍微多留点边距
-                text_rect = fm.boundingRect(QRect(0, 0, 200, 100), Qt.AlignLeft, tip_text)
+                text_rect = fm.boundingRect(QRect(0, 0, 220, 120), Qt.AlignLeft, tip_text)
                 tip_w = text_rect.width() + 20
                 tip_h = text_rect.height() + 15
                 

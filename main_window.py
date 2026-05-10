@@ -189,7 +189,7 @@ class FundApp(QMainWindow):
         
         for d in self.drop_days: self.headers.append(f"近{d}日\n涨跌")
         for m in self.pct_months: self.headers.append(f"近{m}月\n百分位")
-        self.headers.extend(["1年趋势", "更新时间", "操作"])
+        self.headers.extend(["趋势", "更新时间", "操作"])
         
         hidden_cols = self.config.get("hidden_columns", [])
         
