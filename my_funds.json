@@ -306,7 +306,8 @@
             "is_held": false,
             "amount": "",
             "yield_rate": "",
-            "is_pinned": true
+            "is_pinned": true,
+            "is_special": true
         },
         "023918": {
             "name": "华夏国证自由现金流ETF发起式联接C",

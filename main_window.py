@@ -91,6 +91,11 @@ class FundApp(QMainWindow):
         self.btn_add.setFixedHeight(35)
         self.btn_add.clicked.connect(self.add_funds)
 
+        self.btn_add_special = QPushButton("🔥 添加到特别关注")
+        self.btn_add_special.setFixedHeight(35)
+        self.btn_add_special.setStyleSheet("background-color: #eb4d4b; color: white;")
+        self.btn_add_special.clicked.connect(self.add_special_funds)
+
         self.btn_refresh = QPushButton("🔄 刷新全市场")
         self.btn_refresh.setFixedHeight(35)
         self.btn_refresh.clicked.connect(self.refresh_data)
@@ -107,12 +112,25 @@ class FundApp(QMainWindow):
 
         top_layout.addWidget(self.input_box)
         top_layout.addWidget(self.btn_add)
+        top_layout.addWidget(self.btn_add_special)
         top_layout.addWidget(self.btn_refresh)
         top_layout.addWidget(self.btn_auto) 
         top_layout.addWidget(self.btn_settings)
         layout.addLayout(top_layout)
 
         self.tabs = QTabWidget()
+        
+        # Tab 0: 特别关注
+        self.tab0 = QWidget()
+        layout0 = QVBoxLayout(self.tab0)
+        layout0.setContentsMargins(0, 0, 0, 0)
+        self.table0 = QTableView()
+        self.table0.setAlternatingRowColors(True)
+        self.table0.verticalHeader().setVisible(False)
+        self.table0.setSelectionBehavior(QTableView.SelectRows)
+        self.table0.setSelectionMode(QTableView.SingleSelection)
+        self.table0.setMouseTracking(True)
+        layout0.addWidget(self.table0)
         
         # Tab 1: 我的自选基金
         self.tab1 = QWidget()
@@ -150,33 +168,44 @@ class FundApp(QMainWindow):
         self.table3.setMouseTracking(True)
         layout3.addWidget(self.table3)
         
+        self.tabs.addTab(self.tab0, "🔥 特别关注")
         self.tabs.addTab(self.tab1, "⭐ 我的自选基金")
         self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜")
-        self.tabs.setTabToolTip(1, "已过滤同质化")
+        self.tabs.setTabToolTip(2, "已过滤同质化")
         self.tabs.addTab(self.tab3, "💎 估值榜")
-        self.tabs.setTabToolTip(2, "PE/PB 最高最低")
+        self.tabs.setTabToolTip(3, "PE/PB 最高最低")
         
         layout.addWidget(self.tabs)
 
         # 绑定点击和双击事件
+        self.table0.clicked.connect(lambda index: self.on_table_clicked(self.table0, index))
         self.table1.clicked.connect(lambda index: self.on_table_clicked(self.table1, index))
         self.table2.clicked.connect(lambda index: self.on_table_clicked(self.table2, index))
         self.table3.clicked.connect(lambda index: self.on_table_clicked(self.table3, index))
         
+        self.table0.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table0, index))
         self.table1.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table1, index))
         self.table2.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table2, index))
         self.table3.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table3, index))
 
         # 右键菜单
+        self.table0.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table0.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table0, pos))
         self.table1.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table1.customContextMenuRequested.connect(self.show_context_menu)
+        self.table1.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table1, pos))
+        self.table2.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table2.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table2, pos))
+        self.table3.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table3.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table3, pos))
 
         self.apply_styles()
         
         # 初始化表格模型和代理 - 将在 rebuild_table_headers 中设置
+        self.model0 = None
         self.model1 = None
         self.model2 = None
         self.model3 = None
+        self.delegate0 = None
         self.delegate1 = None
         self.delegate2 = None
         self.delegate3 = None
@@ -197,7 +226,8 @@ class FundApp(QMainWindow):
         hidden_cols = self.config.get("hidden_columns", [])
         
         # 创建模型和代理
-        for table, table_type in [(self.table1, "my_fund"), (self.table2, "ranking"), (self.table3, "valuation")]:
+        for table, table_type in [(self.table0, "special"), (self.table1, "my_fund"), 
+                                  (self.table2, "ranking"), (self.table3, "valuation")]:
             model = FundTableModel(self.headers, parent=self)
             delegate = FundTableDelegate(table_type=table_type, parent=self)
             
@@ -249,7 +279,10 @@ class FundApp(QMainWindow):
                 table.setColumnHidden(i, h in hidden_cols)
             
             # 保存模型和代理引用
-            if table == self.table1:
+            if table == self.table0:
+                self.model0 = model
+                self.delegate0 = delegate
+            elif table == self.table1:
                 self.model1 = model
                 self.delegate1 = delegate
             elif table == self.table2:
@@ -348,7 +381,7 @@ class FundApp(QMainWindow):
             else:
                 # 如果仅仅是显示/隐藏列变化，不需要重建 model，直接更新视图即可，避免数据消失
                 hidden_cols = self.config.get("hidden_columns", [])
-                for table in [self.table1, self.table2, self.table3]:
+                for table in [self.table0, self.table1, self.table2, self.table3]:
                     for i, h in enumerate(self.headers):
                         table.setColumnHidden(i, h in hidden_cols)
 
@@ -486,8 +519,40 @@ class FundApp(QMainWindow):
         if added > 0:
             self.save_config()
             self.input_box.clear()
-            # 这里由于可能添加了多个，简单起见重新同步一下自选表（但不刷新全市场）
+            # 这里由于可能添加了多个，简单起见重新同步一下表格（但不刷新全市场）
             self.update_my_funds_table()
+            self.update_special_funds_table()
+            self.start_individual_fetcher(list(self.config.get("funds_info", {}).keys()))
+
+    def add_special_funds(self):
+        text = self.input_box.text().strip()
+        if not text: return
+        items = text.replace('，', ',').split(',')
+        added = 0
+        for item in items:
+            item = item.strip()
+            if not item: continue
+            
+            parts = item.split('-', 1)
+            query = parts[0].strip()
+            sector = parts[1].strip() if len(parts) > 1 else ""
+            
+            code = query if query.isdigit() and len(query) == 6 else self.find_code_by_name(query)
+            if code:
+                if code not in self.config.get("funds_info", {}):
+                    self.config["funds_info"][code] = {"name": "", "sector": sector, "is_held": False, "amount": "", "yield_rate": "", "is_special": True}
+                    added += 1
+                else:
+                    self.config["funds_info"][code]["is_special"] = True
+                    if sector:
+                        self.config["funds_info"][code]["sector"] = sector
+                    added += 1
+                    
+        if added > 0:
+            self.save_config()
+            self.input_box.clear()
+            self.update_my_funds_table()
+            self.update_special_funds_table()
             self.start_individual_fetcher(list(self.config.get("funds_info", {}).keys()))
 
     def delete_fund(self, code):
@@ -500,7 +565,8 @@ class FundApp(QMainWindow):
                 self.save_config()
                 self.statusBar().showMessage(f"🗑️ 已删除: {name} ({code})", 3000)
                 
-                # 优化：只从自选模型中删除，不刷新全市场
+                # 优化：从模型中删除，不刷新全市场
+                self.model0.remove_row_by_code(code)
                 self.model1.remove_row_by_code(code)
                 
                 # 同步更新排行榜和估值榜中的按钮状态
@@ -525,36 +591,79 @@ class FundApp(QMainWindow):
             sector = row_data.get("基金板块", "")
             self.add_from_market(code, name, sector)
 
-    def show_context_menu(self, pos):
+    def show_context_menu(self, table, pos):
         """显示右键菜单"""
-        index = self.table1.indexAt(pos)
+        index = table.indexAt(pos)
         if not index.isValid():
             return
             
+        model = table.model()
         row = index.row()
-        row_data = self.model1.get_row_data(row)
+        row_data = model.get_row_data(row)
         code = row_data.get("基金代码")
         name = row_data.get("基金名称")
-        is_pinned = row_data.get("_is_pinned", False)
+        
+        # 获取配置中的信息
+        fund_info = self.config.get("funds_info", {}).get(code, {})
+        is_pinned = fund_info.get("is_pinned", False)
+        is_special = fund_info.get("is_special", False)
+        in_my_funds = code in self.config.get("funds_info", {})
         
         menu = QMenu(self)
         
         view_chart_action = QAction(f"📊 查看走势图", self)
-        view_chart_action.triggered.connect(lambda: self.show_detailed_chart(self.table1, index))
-        
-        pin_text = "📌 取消置顶" if is_pinned else "📌 置顶基金"
-        pin_action = QAction(pin_text, self)
-        pin_action.triggered.connect(lambda: self.toggle_pin_fund(code))
-        
-        delete_action = QAction(f"🗑️ 删除 {name}", self)
-        delete_action.triggered.connect(lambda: self.delete_fund(code))
-        
+        view_chart_action.triggered.connect(lambda: self.show_detailed_chart(table, index))
         menu.addAction(view_chart_action)
-        menu.addAction(pin_action)
-        menu.addSeparator()
-        menu.addAction(delete_action)
         
-        menu.exec(self.table1.viewport().mapToGlobal(pos))
+        menu.addSeparator()
+        
+        if in_my_funds:
+            pin_text = "📌 取消置顶" if is_pinned else "📌 置顶基金"
+            pin_action = QAction(pin_text, self)
+            pin_action.triggered.connect(lambda: self.toggle_pin_fund(code))
+            menu.addAction(pin_action)
+            
+            special_text = "⭐ 取消特别关注" if is_special else "🔥 添加到特别关注"
+            special_action = QAction(special_text, self)
+            special_action.triggered.connect(lambda: self.toggle_special_fund(code))
+            menu.addAction(special_action)
+            
+            delete_action = QAction(f"🗑️ 从自选删除 {name}", self)
+            delete_action.triggered.connect(lambda: self.delete_fund(code))
+            menu.addAction(delete_action)
+        else:
+            add_my_action = QAction("⭐ 添加到自选", self)
+            sector = row_data.get("基金板块", "")
+            add_my_action.triggered.connect(lambda: self.add_from_market(code, name, sector))
+            menu.addAction(add_my_action)
+            
+            add_special_action = QAction("🔥 添加到特别关注", self)
+            add_special_action.triggered.connect(lambda: self.add_from_market(code, name, sector, to_special=True))
+            menu.addAction(add_special_action)
+        
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    def toggle_special_fund(self, code):
+        """切换特别关注状态"""
+        if code in self.config.get("funds_info", {}):
+            current_state = self.config["funds_info"][code].get("is_special", False)
+            new_state = not current_state
+            self.config["funds_info"][code]["is_special"] = new_state
+            self.save_config()
+            
+            # 更新模型
+            if new_state:
+                # 添加到特别关注表
+                fund_info = self.config["funds_info"][code]
+                self.add_single_fund_to_model(code, fund_info.get("name"), fund_info.get("sector"), to_special=True)
+                # 触发抓取以确保数据最新
+                self.start_individual_fetcher([code])
+            else:
+                # 从特别关注表移除
+                if self.model0:
+                    self.model0.remove_row_by_code(code)
+            
+            self.statusBar().showMessage("✅ 已更新特别关注状态", 2000)
 
     def toggle_pin_fund(self, code):
         """切换置顶状态"""
@@ -564,31 +673,37 @@ class FundApp(QMainWindow):
             self.config["funds_info"][code]["is_pinned"] = new_state
             self.save_config()
             
-            # 优化：直接更新模型数据并重新排序，而不触发全量刷新
-            row = self.model1.find_row_by_code(code)
-            if row != -1:
-                row_data = self.model1.get_row_data(row)
-                row_data["_is_pinned"] = new_state
-                self.model1.update_row(row, row_data)
-                
-                # 触发排序应用置顶
-                header_view = self.table1.horizontalHeader()
-                self.model1.sort(header_view.sortIndicatorSection(), header_view.sortIndicatorOrder())
+            # 优化：同步更新所有涉及该基金的模型数据
+            for model, table in [(self.model1, self.table1), (self.model0, self.table0)]:
+                if model:
+                    row = model.find_row_by_code(code)
+                    if row != -1:
+                        row_data = model.get_row_data(row)
+                        row_data["_is_pinned"] = new_state
+                        model.update_row(row, row_data)
+                        
+                        # 触发排序应用置顶
+                        header_view = table.horizontalHeader()
+                        model.sort(header_view.sortIndicatorSection(), header_view.sortIndicatorOrder())
                 
             self.statusBar().showMessage("✅ 已更新置顶状态", 2000)
-    def add_from_market(self, code, name, sector):
+    def add_from_market(self, code, name, sector, to_special=False):
         if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
             sector = extract_fund_sector(name, code)
 
         if code not in self.config.get("funds_info", {}):
-            self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": ""}
+            self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": "", "is_special": to_special}
             self.save_config()
             
-            # 优化：只向自选表添加一行
+            # 优化：向自选表添加一行
             self.add_single_fund_to_model(code, name, sector)
+            if to_special:
+                self.add_single_fund_to_model(code, name, sector, to_special=True)
+                
             self.start_individual_fetcher([code])
             
-            QMessageBox.information(self, "添加成功", f"已成功将 {name} (板块: {sector}) 放入我的自选基金列表！\n请切换回第一页查看。")
+            target = "特别关注" if to_special else "我的自选"
+            QMessageBox.information(self, "添加成功", f"已成功将 {name} (板块: {sector}) 放入{target}列表！")
             
             row = self.get_row_by_code(self.table2, code)
             if row != -1:
@@ -625,28 +740,67 @@ class FundApp(QMainWindow):
                     row_data["操作"] = status_text
                     model.update_row(r, row_data)
 
-    def add_single_fund_to_model(self, code, name, sector):
-        """向自选模型添加单个基金行"""
-        row_data = {h: "-" for h in self.headers}
-        row_data["序号"] = str(self.model1.rowCount() + 1)
-        row_data["持有"] = "0"
-        row_data["基金代码"] = code
-        row_data["基金名称"] = name if name else "加载中..."
-        row_data["基金板块"] = sector
+    def add_single_fund_to_model(self, code, name, sector, to_special=False):
+        """向模型添加单个基金行"""
+        model = self.model0 if to_special else self.model1
+        table = self.table0 if to_special else self.table1
         
-        fund_info = self.config["funds_info"].get(code, {})
-        row_data["持有金额/\n收益率"] = fund_info.get("amount", "")
-        row_data["操作"] = "❌删除"
+        if not model: return
+
+        # 1. 尝试从另一个自选表中查找现有数据（最完整的数据源）
+        other_model = self.model1 if to_special else self.model0
+        existing_row = -1
+        if other_model:
+            existing_row = other_model.find_row_by_code(code)
+        
+        if existing_row != -1:
+            row_data = other_model.get_row_data(existing_row).copy()
+            # 更新序号为当前模型的序号
+            row_data["序号"] = str(model.rowCount() + 1)
+        else:
+            # 2. 尝试从排行榜或估值榜中查找数据
+            found_in_market = False
+            for m in [self.model2, self.model3]:
+                if m:
+                    idx = m.find_row_by_code(code)
+                    if idx != -1:
+                        row_data = m.get_row_data(idx).copy()
+                        row_data["序号"] = str(model.rowCount() + 1)
+                        # 重置操作按钮为自选列表的样式
+                        row_data["操作"] = "❌删除"
+                        found_in_market = True
+                        break
+            
+            if not found_in_market:
+                # 3. 都没有，则创建空白行
+                row_data = {h: "-" for h in self.headers}
+                row_data["序号"] = str(model.rowCount() + 1)
+                row_data["持有"] = "0"
+                row_data["基金代码"] = code
+                row_data["基金名称"] = name if name else "加载中..."
+                row_data["基金板块"] = sector
+                
+                fund_info = self.config.get("funds_info", {}).get(code, {})
+                row_data["持有金额/\n收益率"] = fund_info.get("amount", "")
+                row_data["操作"] = "❌删除"
+                row_data["_is_pinned"] = fund_info.get("is_pinned", False)
+        
+        # 确保基础元数据正确
+        fund_info = self.config.get("funds_info", {}).get(code, {})
         row_data["_is_pinned"] = fund_info.get("is_pinned", False)
-        
-        self.model1.add_row(row_data)
+        if to_special or not to_special: # 统一设为删除，因为 model0 和 model1 都是自选性质
+             row_data["操作"] = "❌删除"
+
+        model.add_row(row_data)
         
         # 应用排序
-        header_view = self.table1.horizontalHeader()
-        self.model1.sort(header_view.sortIndicatorSection(), header_view.sortIndicatorOrder())
+        if table:
+            header_view = table.horizontalHeader()
+            model.sort(header_view.sortIndicatorSection(), header_view.sortIndicatorOrder())
         
         # 同步更新其他表的状态
-        self._sync_action_button_status(code, "已添加")
+        if not to_special:
+            self._sync_action_button_status(code, "已添加")
 
     def update_my_funds_table(self):
         """仅更新自选基金表格结构，不触发其他 Tab 刷新"""
@@ -658,6 +812,17 @@ class FundApp(QMainWindow):
         for code in funds:
             fund_info = self.config["funds_info"][code]
             self.add_single_fund_to_model(code, fund_info.get("name"), fund_info.get("sector"))
+
+    def update_special_funds_table(self):
+        """更新特别关注表格结构"""
+        funds = [code for code, info in self.config.get("funds_info", {}).items() if info.get("is_special")]
+        # 同样按置顶排序
+        funds.sort(key=lambda x: self.config["funds_info"][x].get("is_pinned", False), reverse=True)
+        
+        self.model0.clear_all()
+        for code in funds:
+            fund_info = self.config["funds_info"][code]
+            self.add_single_fund_to_model(code, fund_info.get("name"), fund_info.get("sector"), to_special=True)
 
     def start_individual_fetcher(self, codes):
         """为特定的一组代码启动抓取线程，不影响排行榜/估值榜列表"""
@@ -696,6 +861,7 @@ class FundApp(QMainWindow):
                        reverse=True)
         
         # 清空现有数据
+        self.model0.clear_all()
         self.model1.clear_all()
         
         # 添加新的行
@@ -717,8 +883,18 @@ class FundApp(QMainWindow):
             row_data["_is_pinned"] = fund_info.get("is_pinned", False)
             
             self.model1.add_row(row_data)
+            
+            # 如果是特别关注，也添加到 model0
+            if fund_info.get("is_special"):
+                # 重新计算 model0 的序号
+                special_row = row_data.copy()
+                special_row["序号"] = str(len(self.model0.data_rows) + 1)
+                self.model0.add_row(special_row)
         
         # 加载完成后，如果表格开启了排序，需要手动触发一次排序以应用置顶逻辑
+        if self.table0.horizontalHeader().sortIndicatorSection() != -1:
+            self.model0.sort(self.table0.horizontalHeader().sortIndicatorSection(), 
+                             self.table0.horizontalHeader().sortIndicatorOrder())
         if self.table1.horizontalHeader().sortIndicatorSection() != -1:
             self.model1.sort(self.table1.horizontalHeader().sortIndicatorSection(), 
                              self.table1.horizontalHeader().sortIndicatorOrder())
@@ -811,7 +987,8 @@ class FundApp(QMainWindow):
         # 启动数据抓取（合并之前的自选和排行榜）
         my_funds = list(self.config.get("funds_info", {}).keys())
         market_codes = [self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows))]
-        all_fetch_codes = list(set(my_funds + market_codes + fetch_codes))
+        valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -899,6 +1076,10 @@ class FundApp(QMainWindow):
                 self.config["funds_info"][code]["name"] = name
                 self.need_config_save = True
             self.populate_row_data(self.model1, row1, data, is_my_fund=True)
+            
+        row0 = self.get_row_by_code(self.table0, code)
+        if row0 != -1:
+            self.populate_row_data(self.model0, row0, data, is_my_fund=True)
             
         row2 = self.get_row_by_code(self.table2, code)
         if row2 != -1:
@@ -1032,6 +1213,10 @@ class FundApp(QMainWindow):
         row1 = self.get_row_by_code(self.table1, code)
         if row1 != -1: 
             self.populate_error(self.model1, row1, code, error_msg, is_my_fund=True)
+            
+        row0 = self.get_row_by_code(self.table0, code)
+        if row0 != -1: 
+            self.populate_error(self.model0, row0, code, error_msg, is_my_fund=True)
             
         row2 = self.get_row_by_code(self.table2, code)
         if row2 != -1: 
