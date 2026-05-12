@@ -307,6 +307,20 @@
             "amount": "",
             "yield_rate": "",
             "is_pinned": true
+        },
+        "023918": {
+            "name": "华夏国证自由现金流ETF发起式联接C",
+            "sector": "国证自由现金流",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
+        },
+        "014674": {
+            "name": "富国中证港股通互联网ETF发起式联接C",
+            "sector": "互联网",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
         }
     },
     "drop_days": [

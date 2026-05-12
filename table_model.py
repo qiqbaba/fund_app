@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF
 from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, QLineEdit, QPushButton, QHBoxLayout
+from PySide6.QtWidgets import (QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, 
+                               QLineEdit, QPushButton, QHBoxLayout, QStyle)
 
 
 class FundTableModel(QAbstractTableModel):
@@ -158,6 +159,27 @@ class FundTableModel(QAbstractTableModel):
                 rows.append(i)
         return rows
 
+    def remove_row(self, row):
+        """删除指定行"""
+        if row < 0 or row >= len(self.data_rows):
+            return False
+        
+        self.beginRemoveRows(QModelIndex(), row, row)
+        self.data_rows.pop(row)
+        self.endRemoveRows()
+        return True
+
+    def remove_row_by_code(self, code):
+        """根据代码删除行（删除所有匹配的行）"""
+        rows = self.find_all_rows_by_code(code)
+        if not rows:
+            return False
+            
+        # 从后往前删，避免索引偏移
+        for row in sorted(rows, reverse=True):
+            self.remove_row(row)
+        return True
+
 
 class FundTableDelegate(QStyledItemDelegate):
     """基金表格代理 - 用于自定义渲染和换行"""
@@ -183,26 +205,59 @@ class FundTableDelegate(QStyledItemDelegate):
         header = model.headers[column] if column < len(model.headers) else ""
         
         # 绘制背景
-        painter.fillRect(option.rect, option.palette.base())
+        # 获取状态
+        is_selected = option.state & QStyle.State_Selected
+        is_focused = option.state & QStyle.State_HasFocus
+        is_hovered = option.state & QStyle.State_MouseOver
         
-        # 确定颜色
+        # 1. 确定并绘制基础背景色 (包含红绿百分位、置顶色等)
         bg_color = self._get_background_color(data, header)
-        
-        # 置顶行背景色高亮（浅蓝色）
-        is_pinned = index.model().get_row_data(index.row()).get("_is_pinned", False)
-        if is_pinned and header != "操作":
-            # 仅当该列没有特定的背景色（如百分位红绿）时，才使用置顶高亮色
-            if not bg_color:
+        if not bg_color:
+            is_pinned = index.model().get_row_data(index.row()).get("_is_pinned", False)
+            if is_pinned and header != "操作":
                 bg_color = QColor("#f0f7ff") 
-            
+        
         if bg_color:
             painter.fillRect(option.rect, bg_color)
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+            
+        # 2. 处理选中和悬停效果 (使用半透明叠加，不遮挡原有颜色)
+        if is_selected:
+            # 透明度改为 15% (约 38/255)
+            selection_color = QColor(52, 152, 219, 38) 
+            painter.fillRect(option.rect, selection_color)
+            
+            # 绘制选中行的外边框 (不绘制单元格内部垂直边框)
+            border_pen = QPen(QColor(52, 152, 219, 120), 1)
+            painter.setPen(border_pen)
+            
+            # 上下边框
+            painter.drawLine(option.rect.topLeft(), option.rect.topRight())
+            painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+            
+            # 如果是第一列，画左边框
+            if index.column() == 0:
+                painter.drawLine(option.rect.topLeft(), option.rect.bottomLeft())
+            
+            # 如果是最后一列，画右边框
+            if index.column() == model.columnCount() - 1:
+                painter.drawLine(option.rect.topRight(), option.rect.bottomRight())
+                
+        elif is_hovered:
+            painter.fillRect(option.rect, QColor(0, 0, 0, 10)) # 极浅的黑色叠加层 (约 4%)
+            
+        # 如果有焦点，画一个点状边框 (可选，如果觉得干扰可以去掉，目前保留以增强可访问性)
+        if is_focused:
+            pen = QPen(QColor(52, 152, 219, 180), 1, Qt.DotLine)
+            painter.setPen(pen)
+            painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
         
         # 确定字体
         font = self._get_font(data, header)
         painter.setFont(font)
         
-        # 确定文本颜色
+        # 确定文本颜色 - 选中时不再强制变白，保留原有的红绿颜色逻辑
         text_color = self._get_text_color(data, header)
         painter.setPen(text_color)
         
@@ -211,17 +266,21 @@ class FundTableDelegate(QStyledItemDelegate):
             # 使用QTextDocument处理换行和对齐
             doc = QTextDocument()
             doc.setTextWidth(option.rect.width() - 4)
-            doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0;'>{str(data)}</div>")
+            # 将颜色转换为 hex 格式
+            color_name = text_color.name()
+            doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
             
             painter.save()
             painter.translate(option.rect.x() + 2, option.rect.y() + 2)
             doc.drawContents(painter, QRect(0, 0, option.rect.width() - 4, option.rect.height() - 4))
             painter.restore()
-        elif header == "1年趋势":
+        elif header == "趋势":
             # 绘制迷你走势图 (Sparkline)
             navs = index.data(Qt.UserRole + 2) # 从 UserRole + 2 获取原始数据
             if navs and isinstance(navs, list) and len(navs) > 1:
-                self._draw_sparkline(painter, option.rect, navs)
+                # 即使选中也使用原始颜色，因为现在的选中效果很淡
+                line_color = QColor("#0097e6")
+                self._draw_sparkline(painter, option.rect, navs, line_color)
             else:
                 painter.drawText(option.rect, Qt.AlignCenter, "-")
         else:
@@ -232,7 +291,7 @@ class FundTableDelegate(QStyledItemDelegate):
                 text = "📌"
             painter.drawText(option.rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.AlignVCenter, text)
 
-    def _draw_sparkline(self, painter, rect, navs):
+    def _draw_sparkline(self, painter, rect, navs, line_color=QColor("#0097e6")):
         """在单元格内绘制迷你趋势图"""
         # 反转数据为正序 (原始数据通常是倒序)
         data = navs[::-1]
@@ -261,7 +320,7 @@ class FundTableDelegate(QStyledItemDelegate):
             points.append(QPointF(x, y))
             
         # 画折线
-        painter.setPen(QPen(QColor("#0097e6"), 1.5))
+        painter.setPen(QPen(line_color, 1.5))
         painter.drawPolyline(points)
         
         # 画起终点（可选）
@@ -298,7 +357,7 @@ class FundTableDelegate(QStyledItemDelegate):
                 height = int(doc.size().height()) + 4
                 return QSize(text_width, max(height, 35))
         
-        if header == "1年趋势":
+        if header == "趋势":
             return QSize(80, 35)
         
         return super().sizeHint(option, index)
