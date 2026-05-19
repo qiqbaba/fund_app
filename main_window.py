@@ -110,11 +110,17 @@ class FundApp(QMainWindow):
         self.btn_settings.setStyleSheet("background-color: #747d8c; color: white;")
         self.btn_settings.clicked.connect(self.open_settings)
 
+        self.btn_batch_backtest = QPushButton("📊 批量策略回测")
+        self.btn_batch_backtest.setFixedHeight(35)
+        self.btn_batch_backtest.setStyleSheet("background-color: #9b59b6; color: white;")
+        self.btn_batch_backtest.clicked.connect(self.open_batch_backtest)
+
         top_layout.addWidget(self.input_box)
         top_layout.addWidget(self.btn_add)
         top_layout.addWidget(self.btn_add_special)
         top_layout.addWidget(self.btn_refresh)
         top_layout.addWidget(self.btn_auto) 
+        top_layout.addWidget(self.btn_batch_backtest)
         top_layout.addWidget(self.btn_settings)
         layout.addLayout(top_layout)
 
@@ -385,6 +391,17 @@ class FundApp(QMainWindow):
                     for i, h in enumerate(self.headers):
                         table.setColumnHidden(i, h in hidden_cols)
 
+    def open_batch_backtest(self):
+        lists = {
+            "特别关注": [(self.model0.get_row_data(i)["基金代码"], self.model0.get_row_data(i)["基金名称"]) for i in range(self.model0.rowCount())] if self.model0 else [],
+            "我的自选基金": [(self.model1.get_row_data(i)["基金代码"], self.model1.get_row_data(i)["基金名称"]) for i in range(self.model1.rowCount())] if self.model1 else [],
+            "今日指数ETF独立涨跌榜": [(self.model2.get_row_data(i)["基金代码"], self.model2.get_row_data(i)["基金名称"]) for i in range(self.model2.rowCount())] if self.model2 else [],
+            "估值榜": [(self.model3.get_row_data(i)["基金代码"], self.model3.get_row_data(i)["基金名称"]) for i in range(self.model3.rowCount())] if self.model3 else []
+        }
+        from batch_backtest_dialog import BatchBacktestDialog
+        dialog = BatchBacktestDialog(lists, self.history_cache, self.db, self)
+        dialog.exec()
+
     def toggle_auto_refresh(self):
         if self.refresh_timer.isActive():
             self.refresh_timer.stop()
@@ -614,6 +631,10 @@ class FundApp(QMainWindow):
         view_chart_action = QAction(f"📊 查看走势图", self)
         view_chart_action.triggered.connect(lambda: self.show_detailed_chart(table, index))
         menu.addAction(view_chart_action)
+
+        backtest_action = QAction("💡 策略回测", self)
+        backtest_action.triggered.connect(lambda: self.show_backtest_dialog(code, name))
+        menu.addAction(backtest_action)
         
         menu.addSeparator()
         
@@ -642,6 +663,23 @@ class FundApp(QMainWindow):
             menu.addAction(add_special_action)
         
         menu.exec(table.viewport().mapToGlobal(pos))
+
+    def show_backtest_dialog(self, code, name):
+        """显示策略回测弹窗"""
+        # 优先从内存缓存中取数据
+        history_data = self.history_cache.get(code)
+        if not history_data:
+            # 或者尝试从数据库中获取
+            history_data = self.db.get_history(code)
+            
+        if not history_data or not history_data.get("navs"):
+            QMessageBox.warning(self, "数据不足", f"没有找到基金 {name} ({code}) 的历史数据，请稍后重试或等待刷新完成。")
+            return
+            
+        from backtest_dialog import BacktestDialog
+        dialog = BacktestDialog(code, name, history_data, self)
+        dialog.exec()
+
 
     def toggle_special_fund(self, code):
         """切换特别关注状态"""
