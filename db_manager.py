@@ -30,6 +30,22 @@ class FundHistoryDB:
                     update_time REAL
                 )
             ''')
+            # 创建基金最优策略参数表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS fund_optimal_strategy (
+                    fund_code TEXT PRIMARY KEY,
+                    fund_name TEXT,
+                    buy_days INTEGER,
+                    buy_drop REAL,
+                    target_profit REAL,
+                    hold_min INTEGER,
+                    hold_max INTEGER,
+                    win_rate REAL,
+                    total_trades INTEGER,
+                    avg_profit REAL,
+                    update_time REAL
+                )
+            ''')
             conn.commit()
     
     def get_history(self, fund_code):
@@ -108,3 +124,68 @@ class FundHistoryDB:
             cursor = conn.cursor()
             cursor.execute('SELECT fund_code FROM fund_history')
             return [row[0] for row in cursor.fetchall()]
+
+    def save_optimal_strategy(self, fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit):
+        """保存或更新基金的最优策略参数寻优结果"""
+        import time
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            current_time = time.time()
+            cursor.execute('''
+                INSERT OR REPLACE INTO fund_optimal_strategy 
+                (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, current_time))
+            conn.commit()
+
+    def get_optimal_strategy(self, fund_code):
+        """获取基金的最优策略参数
+        返回: dict 或 None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
+                FROM fund_optimal_strategy WHERE fund_code = ?
+            ''', (fund_code,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'buy_days': row[0],
+                    'buy_drop': row[1],
+                    'target_profit': row[2],
+                    'hold_min': row[3],
+                    'hold_max': row[4],
+                    'win_rate': row[5],
+                    'total_trades': row[6],
+                    'avg_profit': row[7],
+                    'update_time': row[8] if len(row) > 8 else None
+                }
+            return None
+
+    def get_all_optimal_strategies(self):
+        """获取所有有最优策略参数的基金
+        返回: dict, {fund_code: {'buy_days': ..., 'fund_name': ...}}
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
+                FROM fund_optimal_strategy
+            ''')
+            rows = cursor.fetchall()
+            result = {}
+            for row in rows:
+                result[row[0]] = {
+                    'fund_name': row[1],
+                    'buy_days': row[2],
+                    'buy_drop': row[3],
+                    'target_profit': row[4],
+                    'hold_min': row[5],
+                    'hold_max': row[6],
+                    'win_rate': row[7],
+                    'total_trades': row[8],
+                    'avg_profit': row[9],
+                    'update_time': row[10] if len(row) > 10 else None
+                }
+            return result

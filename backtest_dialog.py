@@ -3,6 +3,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineE
                                QTableWidgetItem, QHeaderView, QWidget, QCheckBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
+from db_manager import FundHistoryDB
+from threads import OptimalStrategyFinder
 
 class BacktestDialog(QDialog):
     def __init__(self, code, name, history_data, parent=None):
@@ -20,7 +22,11 @@ class BacktestDialog(QDialog):
         if not self.all_dates and self.all_navs:
             self.all_dates = [f"D-{len(self.all_navs)-i}" for i in range(len(self.all_navs))]
 
+        self.db = FundHistoryDB()
+        self.opt_strat = self.db.get_optimal_strategy(code)
+
         self.init_ui()
+        self.load_optimal_params_if_exists()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -28,6 +34,19 @@ class BacktestDialog(QDialog):
         # 参数设置组
         params_group = QGroupBox("回测参数设置")
         params_layout = QFormLayout()
+
+        # 最优参数提示框
+        self.lbl_opt_tip = QLabel()
+        self.lbl_opt_tip.setWordWrap(True)
+        self.lbl_opt_tip.setStyleSheet("""
+            background-color: #e3f2fd;
+            color: #0d47a1;
+            border: 1px solid #bbdefb;
+            border-radius: 4px;
+            padding: 6px;
+            font-weight: bold;
+        """)
+        params_layout.addRow(self.lbl_opt_tip)
 
         # 买入条件
         buy_layout = QHBoxLayout()
@@ -78,10 +97,19 @@ class BacktestDialog(QDialog):
         params_layout.addRow(sell_layout)
         params_layout.addRow(early_sell_layout)
         
+        # 按钮水平布局
+        btn_layout = QHBoxLayout()
         btn_run = QPushButton("▶ 开始回测")
-        btn_run.setStyleSheet("background-color: #0097e6; color: white; padding: 5px; font-weight: bold;")
+        btn_run.setStyleSheet("background-color: #0097e6; color: white; padding: 6px; font-weight: bold; border-radius: 4px;")
         btn_run.clicked.connect(self.run_backtest)
-        params_layout.addRow(btn_run)
+        btn_layout.addWidget(btn_run)
+        
+        self.btn_optimize = QPushButton("🔍 自动寻优最佳参数")
+        self.btn_optimize.setStyleSheet("background-color: #2ed573; color: white; padding: 6px; font-weight: bold; border-radius: 4px;")
+        self.btn_optimize.clicked.connect(self.start_optimize)
+        btn_layout.addWidget(self.btn_optimize)
+        
+        params_layout.addRow(btn_layout)
         
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
@@ -166,8 +194,12 @@ class BacktestDialog(QDialog):
                     current_nav = self.all_navs[i + j]
                     profit = (current_nav - buy_nav) / buy_nav
                     
+                    # 7天内扣去1.5%赎回惩罚，所以止盈收益率需要比原目标高1.5%
+                    target = target_profit + 0.015 if j < 7 else target_profit
+                    
                     if j < hold_min:
-                        if self.early_sell_checkbox.isChecked() and profit >= early_profit:
+                        early_target = early_profit + 0.015 if j < 7 else early_profit
+                        if self.early_sell_checkbox.isChecked() and profit >= early_target:
                             success = True
                             actual_hold = j
                             sell_idx = i + j
@@ -175,7 +207,7 @@ class BacktestDialog(QDialog):
                             sell_date = self.all_dates[i + j]
                             break
                     else:
-                        if profit >= target_profit:
+                        if profit >= target:
                             success = True
                             actual_hold = j
                             sell_idx = i + j
@@ -199,6 +231,8 @@ class BacktestDialog(QDialog):
                 
                 # 记录交易
                 final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0
+                if actual_hold < 7:
+                    final_profit -= 0.015  # 惩罚赎回费
                 trades.append({
                     "buy_date": buy_date,
                     "buy_nav": buy_nav,
@@ -275,3 +309,45 @@ class BacktestDialog(QDialog):
             if t["success"]:
                 result_item.setForeground(QColor("#c0392b"))
             self.table.setItem(idx, 6, result_item)
+
+    def load_optimal_params_if_exists(self):
+        if self.opt_strat:
+            self.buy_days_input.setText(str(self.opt_strat["buy_days"]))
+            self.buy_drop_input.setText(f"{self.opt_strat['buy_drop']:.1f}")
+            self.target_profit_input.setText(f"{self.opt_strat['target_profit']:.1f}")
+            self.early_profit_input.setText(f"{self.opt_strat['target_profit']:.1f}") # 提前止盈默认与目标止盈一致
+            self.hold_min_days_input.setText(str(self.opt_strat["hold_min"]))
+            self.hold_max_days_input.setText(str(self.opt_strat["hold_max"]))
+            
+            self.lbl_opt_tip.setText(f"💡 已加载该基金专属最优参数（历史寻优胜率: {self.opt_strat['win_rate']:.2f}%, 交易次数: {self.opt_strat['total_trades']}，平均单次收益: {self.opt_strat['avg_profit']:.2f}%）")
+        else:
+            self.lbl_opt_tip.setText("💡 当前为系统默认回测参数，点击下方【自动寻优最佳参数】可获得最高胜率策略。")
+
+    def start_optimize(self):
+        self.btn_optimize.setEnabled(False)
+        self.btn_optimize.setText("正在寻优... (0%)")
+        self.lbl_opt_tip.setText("💡 正在后台暴力网格寻优，请稍候...")
+        
+        history_data = {"navs": self.all_navs[::-1], "dates": self.all_dates[::-1]}
+        self.finder = OptimalStrategyFinder(self.code, self.name, history_data, self.db)
+        self.finder.progress_signal.connect(self.on_optimize_progress)
+        self.finder.result_signal.connect(self.on_optimize_finished)
+        self.finder.start()
+        
+    def on_optimize_progress(self, current, total):
+        pct = int(current / total * 100)
+        self.btn_optimize.setText(f"正在寻优... ({pct}%)")
+        
+    def on_optimize_finished(self, result):
+        self.btn_optimize.setEnabled(True)
+        self.btn_optimize.setText("🔍 自动寻优最佳参数")
+        
+        if result.get("error"):
+            QMessageBox.warning(self, "寻优失败", result["error"])
+            self.lbl_opt_tip.setText("💡 当前为系统默认回测参数，点击下方【自动寻优最佳参数】可获得最高胜率策略。")
+            return
+            
+        self.opt_strat = result
+        self.load_optimal_params_if_exists()
+        QMessageBox.information(self, "寻优完成", f"已成功为 {self.name} 找到最优策略参数！")
+        self.run_backtest()

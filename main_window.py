@@ -9,7 +9,7 @@ import threading
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLineEdit, QPushButton, QTableView, QHeaderView, 
                                QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
-                               QMenu)
+                               QMenu, QStackedWidget)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QFont, QAction
 
@@ -110,17 +110,11 @@ class FundApp(QMainWindow):
         self.btn_settings.setStyleSheet("background-color: #747d8c; color: white;")
         self.btn_settings.clicked.connect(self.open_settings)
 
-        self.btn_batch_backtest = QPushButton("📊 批量策略回测")
-        self.btn_batch_backtest.setFixedHeight(35)
-        self.btn_batch_backtest.setStyleSheet("background-color: #9b59b6; color: white;")
-        self.btn_batch_backtest.clicked.connect(self.open_batch_backtest)
-
         top_layout.addWidget(self.input_box)
         top_layout.addWidget(self.btn_add)
         top_layout.addWidget(self.btn_add_special)
         top_layout.addWidget(self.btn_refresh)
         top_layout.addWidget(self.btn_auto) 
-        top_layout.addWidget(self.btn_batch_backtest)
         top_layout.addWidget(self.btn_settings)
         layout.addLayout(top_layout)
 
@@ -174,12 +168,49 @@ class FundApp(QMainWindow):
         self.table3.setMouseTracking(True)
         layout3.addWidget(self.table3)
         
+        # Tab 4: 其他(已有数据)
+        self.tab_other = QWidget()
+        layout_other = QVBoxLayout(self.tab_other)
+        layout_other.setContentsMargins(0, 0, 0, 0)
+        self.table_other = QTableView()
+        self.table_other.setAlternatingRowColors(True)
+        self.table_other.verticalHeader().setVisible(False)
+        self.table_other.setSelectionBehavior(QTableView.SelectRows)
+        self.table_other.setSelectionMode(QTableView.SingleSelection)
+        self.table_other.setMouseTracking(True)
+        layout_other.addWidget(self.table_other)
+        
+        # Tab 5: 策略中心
+        self.tab4 = QWidget()
+        layout4 = QHBoxLayout(self.tab4)
+        
+        self.strategy_list = QListWidget()
+        self.strategy_list.setFixedWidth(150)
+        self.strategy_list.addItem("📉 抄底止盈回测")
+        self.strategy_list.addItem("（待添加策略）")
+        
+        self.strategy_stack = QStackedWidget()
+        
+        from batch_backtest_dialog import BatchBacktestWidget
+        self.backtest_widget = BatchBacktestWidget(self.get_fund_lists, self.history_cache, self.db, self)
+        empty_widget = QWidget()
+        
+        self.strategy_stack.addWidget(self.backtest_widget)
+        self.strategy_stack.addWidget(empty_widget)
+        
+        self.strategy_list.currentRowChanged.connect(self.strategy_stack.setCurrentIndex)
+        
+        layout4.addWidget(self.strategy_list)
+        layout4.addWidget(self.strategy_stack)
+        
         self.tabs.addTab(self.tab0, "🔥 特别关注")
         self.tabs.addTab(self.tab1, "⭐ 我的自选基金")
         self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜")
         self.tabs.setTabToolTip(2, "已过滤同质化")
         self.tabs.addTab(self.tab3, "💎 估值榜")
         self.tabs.setTabToolTip(3, "PE/PB 最高最低")
+        self.tabs.addTab(self.tab_other, "📦 其他(已有数据)")
+        self.tabs.addTab(self.tab4, "💡 策略中心")
         
         layout.addWidget(self.tabs)
 
@@ -193,6 +224,8 @@ class FundApp(QMainWindow):
         self.table1.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table1, index))
         self.table2.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table2, index))
         self.table3.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table3, index))
+        self.table_other.clicked.connect(lambda index: self.on_table_clicked(self.table_other, index))
+        self.table_other.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table_other, index))
 
         # 右键菜单
         self.table0.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -203,6 +236,8 @@ class FundApp(QMainWindow):
         self.table2.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table2, pos))
         self.table3.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table3.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table3, pos))
+        self.table_other.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_other.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table_other, pos))
 
         self.apply_styles()
         
@@ -215,11 +250,13 @@ class FundApp(QMainWindow):
         self.delegate1 = None
         self.delegate2 = None
         self.delegate3 = None
+        self.model_other = None
+        self.delegate_other = None
         
         self.rebuild_table_headers()
 
     def rebuild_table_headers(self):
-        self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "持有金额/\n收益率", 
+        self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "最优参数", "持有金额/\n收益率", 
                         "昨日净值", "净值日期", "实时估值", "今日收益/\n收益率"]
         
         self.drop_days = self.config.get("drop_days", [2, 4])
@@ -233,7 +270,7 @@ class FundApp(QMainWindow):
         
         # 创建模型和代理
         for table, table_type in [(self.table0, "special"), (self.table1, "my_fund"), 
-                                  (self.table2, "ranking"), (self.table3, "valuation")]:
+                                  (self.table2, "ranking"), (self.table3, "valuation"), (self.table_other, "other")]:
             model = FundTableModel(self.headers, parent=self)
             delegate = FundTableDelegate(table_type=table_type, parent=self)
             
@@ -260,14 +297,15 @@ class FundApp(QMainWindow):
             table.setColumnWidth(2, 65)
             table.setColumnWidth(3, 180)  # 基金名称，支持换行
             table.setColumnWidth(4, 100)  # 基金板块，支持换行
-            table.setColumnWidth(5, 85)
-            table.setColumnWidth(6, 75)
-            table.setColumnWidth(7, 80)
-            table.setColumnWidth(8, 75)
-            table.setColumnWidth(9, 85)
+            table.setColumnWidth(5, 120)  # 最优参数，支持换行
+            table.setColumnWidth(6, 85)
+            table.setColumnWidth(7, 75)
+            table.setColumnWidth(8, 80)
+            table.setColumnWidth(9, 75)
+            table.setColumnWidth(10, 85)
             
             # 减小数据列宽度
-            for col_idx in range(10, len(self.headers) - 3):
+            for col_idx in range(11, len(self.headers) - 3):
                 table.setColumnWidth(col_idx, 65)
             
             trend_col_index = len(self.headers) - 3
@@ -294,9 +332,12 @@ class FundApp(QMainWindow):
             elif table == self.table2:
                 self.model2 = model
                 self.delegate2 = delegate
-            else:  # table3
+            elif table == self.table3:
                 self.model3 = model
                 self.delegate3 = delegate
+            else:  # table_other
+                self.model_other = model
+                self.delegate_other = delegate
 
     def apply_styles(self):
         self.setStyleSheet("""
@@ -387,20 +428,18 @@ class FundApp(QMainWindow):
             else:
                 # 如果仅仅是显示/隐藏列变化，不需要重建 model，直接更新视图即可，避免数据消失
                 hidden_cols = self.config.get("hidden_columns", [])
-                for table in [self.table0, self.table1, self.table2, self.table3]:
+                for table in [self.table0, self.table1, self.table2, self.table3, self.table_other]:
                     for i, h in enumerate(self.headers):
                         table.setColumnHidden(i, h in hidden_cols)
 
-    def open_batch_backtest(self):
-        lists = {
+    def get_fund_lists(self):
+        return {
             "特别关注": [(self.model0.get_row_data(i)["基金代码"], self.model0.get_row_data(i)["基金名称"]) for i in range(self.model0.rowCount())] if self.model0 else [],
             "我的自选基金": [(self.model1.get_row_data(i)["基金代码"], self.model1.get_row_data(i)["基金名称"]) for i in range(self.model1.rowCount())] if self.model1 else [],
             "今日指数ETF独立涨跌榜": [(self.model2.get_row_data(i)["基金代码"], self.model2.get_row_data(i)["基金名称"]) for i in range(self.model2.rowCount())] if self.model2 else [],
-            "估值榜": [(self.model3.get_row_data(i)["基金代码"], self.model3.get_row_data(i)["基金名称"]) for i in range(self.model3.rowCount())] if self.model3 else []
+            "估值榜": [(self.model3.get_row_data(i)["基金代码"], self.model3.get_row_data(i)["基金名称"]) for i in range(self.model3.rowCount())] if self.model3 else [],
+            "其他(已有数据)": [(self.model_other.get_row_data(i)["基金代码"], self.model_other.get_row_data(i)["基金名称"]) for i in range(self.model_other.rowCount())] if self.model_other else []
         }
-        from batch_backtest_dialog import BatchBacktestDialog
-        dialog = BatchBacktestDialog(lists, self.history_cache, self.db, self)
-        dialog.exec()
 
     def toggle_auto_refresh(self):
         if self.refresh_timer.isActive():
@@ -770,7 +809,7 @@ class FundApp(QMainWindow):
 
     def _sync_action_button_status(self, code, status_text):
         """同步更新各个表中某基金的操作按钮状态"""
-        for model in [self.model2, self.model3]:
+        for model in [self.model2, self.model3, self.model_other]:
             if model:
                 rows = model.find_all_rows_by_code(code)
                 for r in rows:
@@ -817,6 +856,14 @@ class FundApp(QMainWindow):
                 row_data["基金代码"] = code
                 row_data["基金名称"] = name if name else "加载中..."
                 row_data["基金板块"] = sector
+                
+                opt = self.db.get_optimal_strategy(code)
+                if opt:
+                    row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
+                    row_data["_opt_time"] = opt.get('update_time')
+                else:
+                    row_data["最优参数"] = "-"
+                    row_data["_opt_time"] = None
                 
                 fund_info = self.config.get("funds_info", {}).get(code, {})
                 row_data["持有金额/\n收益率"] = fund_info.get("amount", "")
@@ -874,8 +921,11 @@ class FundApp(QMainWindow):
         valuation_codes = []
         if self.model3:
             valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
+        other_codes = []
+        if hasattr(self, 'model_other') and self.model_other:
+            other_codes = [self.model_other.data_rows[i].get("基金代码") for i in range(len(self.model_other.data_rows))]
         
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes))
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -916,6 +966,15 @@ class FundApp(QMainWindow):
             
             fund_info = self.config["funds_info"][code]
             row_data["基金板块"] = fund_info.get("sector", "")
+            
+            opt = self.db.get_optimal_strategy(code)
+            if opt:
+                row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
+                row_data["_opt_time"] = opt.get('update_time')
+            else:
+                row_data["最优参数"] = "-"
+                row_data["_opt_time"] = None
+                
             row_data["持有金额/\n收益率"] = fund_info.get("amount", "")
             row_data["操作"] = "❌删除"
             row_data["_is_pinned"] = fund_info.get("is_pinned", False)
@@ -947,6 +1006,50 @@ class FundApp(QMainWindow):
         self.valuation_fetcher.start()
         
         self.statusBar().showMessage("正在抓取市场及估值数据...")
+
+    def update_other_funds_table(self):
+        """更新'其他'Tab的基金列表，包含有最优参数但不在前4个Tab中的基金"""
+        if not hasattr(self, 'model_other') or not self.model_other:
+            return []
+            
+        all_opt_strategies = self.db.get_all_optimal_strategies()
+        
+        existing_codes = set()
+        existing_codes.update(self.config.get("funds_info", {}).keys())
+        if self.model2:
+            existing_codes.update(self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows)))
+        if self.model3:
+            existing_codes.update(self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows)))
+            
+        other_codes = set(all_opt_strategies.keys()) - existing_codes
+        other_codes = sorted(list(other_codes))
+        
+        self.model_other.clear_all()
+        
+        for i, code in enumerate(other_codes):
+            opt_data = all_opt_strategies[code]
+            name = opt_data.get("fund_name", "未知名称")
+            
+            row_data = {h: "-" for h in self.headers}
+            row_data["序号"] = str(i + 1)
+            row_data["持有"] = "-"
+            row_data["基金代码"] = code
+            row_data["基金名称"] = name
+            row_data["基金板块"] = "未知"
+            
+            row_data["最优参数"] = f"买{opt_data['buy_days']}天>{opt_data['buy_drop']}% 盈>{opt_data['target_profit']}%"
+            row_data["_opt_time"] = opt_data.get('update_time')
+            row_data["持有金额/\n收益率"] = "-"
+            row_data["操作"] = "➕关注"
+            row_data["_is_pinned"] = False
+            
+            self.model_other.add_row(row_data)
+            
+        if self.table_other.horizontalHeader().sortIndicatorSection() != -1:
+            self.model_other.sort(self.table_other.horizontalHeader().sortIndicatorSection(), 
+                                  self.table_other.horizontalHeader().sortIndicatorOrder())
+                                  
+        return other_codes
 
     def on_valuation_fetched(self, valuation_list, is_success):
         if not is_success:
@@ -989,6 +1092,14 @@ class FundApp(QMainWindow):
                 sector = item.get("extracted_sector", "")
                 row_data["基金板块"] = sector
                 
+                opt = self.db.get_optimal_strategy(fund_code)
+                if opt:
+                    row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
+                    row_data["_opt_time"] = opt.get('update_time')
+                else:
+                    row_data["最优参数"] = "-"
+                    row_data["_opt_time"] = None
+                
                 pe_val = item.get("pe", "--")
                 pb_val = item.get("pb", "--")
                 pe_pct_str = item.get("pe_percentile", "--")
@@ -1026,7 +1137,10 @@ class FundApp(QMainWindow):
         my_funds = list(self.config.get("funds_info", {}).keys())
         market_codes = [self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows))]
         valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes))
+        
+        other_codes = self.update_other_funds_table()
+        
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -1070,6 +1184,15 @@ class FundApp(QMainWindow):
             row_data["基金代码"] = code
             row_data["基金名称"] = name
             row_data["基金板块"] = sector
+            
+            opt = self.db.get_optimal_strategy(code)
+            if opt:
+                row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
+                row_data["_opt_time"] = opt.get('update_time')
+            else:
+                row_data["最优参数"] = "-"
+                row_data["_opt_time"] = None
+                
             row_data["持有金额/\n收益率"] = "-"
             
             row_data["操作"] = "已添加" if code in self.config.get("funds_info", {}) else "➕关注"
@@ -1083,7 +1206,10 @@ class FundApp(QMainWindow):
         
         my_funds = list(self.config.get("funds_info", {}).keys())
         valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes))
+        
+        other_codes = self.update_other_funds_table()
+        
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -1125,6 +1251,10 @@ class FundApp(QMainWindow):
             
         for row3 in self.get_all_rows_by_code(self.table3, code):
             self.populate_row_data(self.model3, row3, data, is_my_fund=False)
+            
+        if hasattr(self, 'table_other') and self.table_other:
+            for row4 in self.get_all_rows_by_code(self.table_other, code):
+                self.populate_row_data(self.model_other, row4, data, is_my_fund=False)
 
     def populate_row_data(self, model, row, data, is_my_fund):
         """更新行数据"""
@@ -1262,6 +1392,10 @@ class FundApp(QMainWindow):
         
         for row3 in self.get_all_rows_by_code(self.table3, code):
             self.populate_error(self.model3, row3, code, error_msg, is_my_fund=False)
+
+        if hasattr(self, 'table_other') and self.table_other:
+            for row4 in self.get_all_rows_by_code(self.table_other, code):
+                self.populate_error(self.model_other, row4, code, error_msg, is_my_fund=False)
 
     def populate_error(self, model, row, code, error_msg, is_my_fund):
         if row < 0 or row >= len(model.data_rows):

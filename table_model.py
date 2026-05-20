@@ -52,6 +52,14 @@ class FundTableModel(QAbstractTableModel):
         # 原始历史数据角色 - 用于绘制图表
         if role == Qt.UserRole + 2:
             return row_data.get("_navs", [])
+            
+        if role == Qt.ToolTipRole:
+            if header == "最优参数":
+                opt_time = row_data.get("_opt_time")
+                if opt_time:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(opt_time)
+                    return f"{dt.year}年{dt.month}月{dt.day}日 {dt.strftime('%H:%M')}"
         
         return None
     
@@ -261,8 +269,8 @@ class FundTableDelegate(QStyledItemDelegate):
         text_color = self._get_text_color(data, header)
         painter.setPen(text_color)
         
-        # 对"基金名称"和"基金板块"列启用换行
-        if header in ["基金名称", "基金板块"]:
+        # 对"基金名称"、"基金板块"和"最优参数"列启用换行
+        if header in ["基金名称", "基金板块", "最优参数"]:
             # 使用QTextDocument处理换行和对齐
             doc = QTextDocument()
             doc.setTextWidth(option.rect.width() - 4)
@@ -342,12 +350,12 @@ class FundTableDelegate(QStyledItemDelegate):
         header = model.headers[column] if column < len(model.headers) else ""
         
         # 对需要换行的列计算自适应高度
-        if header in ["基金名称", "基金板块", "持有金额/\n收益率"]:
+        if header in ["基金名称", "基金板块", "最优参数", "持有金额/\n收益率"]:
             data = index.data(Qt.DisplayRole)
             if data:
                 doc = QTextDocument()
                 # 根据列类型设置合适的文本宽度
-                width_map = {"基金名称": 176, "基金板块": 96, "持有金额/\n收益率": 81}
+                width_map = {"基金名称": 176, "基金板块": 96, "最优参数": 116, "持有金额/\n收益率": 81}
                 text_width = width_map.get(header, 100)
                 doc.setTextWidth(text_width)
                 doc.setHtml(f"<div>{str(data)}</div>")

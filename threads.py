@@ -533,3 +533,297 @@ class ValuationFetcher(QThread):
         
         # 多次重试失败
         self.valuation_signal.emit([], False)
+
+
+class OptimalStrategyFinder(QThread):
+    """基金策略参数后台寻优线程"""
+    progress_signal = Signal(int, int)  # current_step, total_steps
+    result_signal = Signal(dict)        # 最优参数结果字典
+    
+    def __init__(self, code, name, history_data, db=None):
+        super().__init__()
+        self.code = code
+        self.name = name
+        self.all_navs = history_data.get("navs", [])[::-1]
+        self.all_dates = history_data.get("dates", [])[::-1]
+        self.db = db if db else FundHistoryDB()
+        
+        # 兼容无日期情况
+        if not self.all_dates and self.all_navs:
+            self.all_dates = [f"D-{len(self.all_navs)-i}" for i in range(len(self.all_navs))]
+
+    def run(self):
+        if len(self.all_navs) < 20:  # 历史数据太少，无法寻优
+            self.result_signal.emit({"error": "历史数据太少，至少需要20个交易日"})
+            return
+            
+        
+        # 自变量搜索空间
+        buy_days_list = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+        buy_drop_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+        target_profit_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+        
+        # 固定最小持有和最大持有时间，避免参数过多导致计算爆炸
+        hold_min = 7
+        hold_max = 90  # 自动寻优最大持有天数设为90天
+        
+        total_steps = len(buy_days_list) * len(buy_drop_list) * len(target_profit_list)
+        current_step = 0
+        
+        results = []
+        
+        # 三层循环网格寻优
+        for buy_days in buy_days_list:
+            if self.isInterruptionRequested():
+                return
+            for buy_drop_pct in buy_drop_list:
+                for target_profit_pct in target_profit_list:
+                    current_step += 1
+                    if current_step % 50 == 0:
+                        self.progress_signal.emit(current_step, total_steps)
+                        
+                    buy_drop = buy_drop_pct / 100.0
+                    target_profit = target_profit_pct / 100.0
+                    
+                    # 模拟回测
+                    trades = []
+                    i = buy_days
+                    while i < len(self.all_navs):
+                        nav_today = self.all_navs[i]
+                        nav_past_max = max(self.all_navs[i - buy_days : i + 1])
+                        drop = (nav_today - nav_past_max) / nav_past_max
+                        
+                        if drop <= -buy_drop:
+                            # 触发买入
+                            buy_nav = nav_today
+                            success = False
+                            actual_hold = 0
+                            sell_idx = i
+                            sell_nav = buy_nav
+                            
+                            for j in range(1, len(self.all_navs) - i):
+                                current_nav = self.all_navs[i + j]
+                                profit = (current_nav - buy_nav) / buy_nav
+                                
+                                # 7天内扣去1.5%赎回惩罚，所以止盈收益率需要比原目标高1.5%
+                                target = target_profit + 0.015 if j < 7 else target_profit
+                                if profit >= target:
+                                    success = True
+                                    actual_hold = j
+                                    sell_idx = i + j
+                                    sell_nav = current_nav
+                                    break
+                                    
+                                if j >= hold_max:
+                                    actual_hold = j
+                                    sell_idx = i + j
+                                    sell_nav = current_nav
+                                    break
+                            else:
+                                actual_hold = len(self.all_navs) - 1 - i
+                                if actual_hold > 0:
+                                    sell_idx = len(self.all_navs) - 1
+                                    sell_nav = self.all_navs[sell_idx]
+                                    
+                            # 计算实际到手收益
+                            final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0
+                            if actual_hold < 7:
+                                final_profit -= 0.015  # 惩罚赎回费
+                                
+                            trades.append({
+                                "success": success,
+                                "profit": final_profit
+                            })
+                            i = sell_idx + 1
+                        else:
+                            i += 1
+                            
+                    total_trades = len(trades)
+                    if total_trades == 0:
+                        continue
+                        
+                    wins = sum(1 for t in trades if t["success"])
+                    win_rate = wins / total_trades * 100.0
+                    avg_profit = sum(t["profit"] for t in trades) / total_trades * 100.0
+                    
+                    results.append({
+                        "buy_days": buy_days,
+                        "buy_drop": buy_drop_pct,
+                        "target_profit": target_profit_pct,
+                        "win_rate": win_rate,
+                        "total_trades": total_trades,
+                        "avg_profit": avg_profit
+                    })
+        
+        if not results:
+            self.result_signal.emit({"error": "在此历史数据范围内未能触发任何交易信号"})
+            return
+            
+        # 根据设计好的指标进行排序筛选最稳健结果
+        # 1. 优先从触发次数 >= 5 的组合中选择，具有统计代表性
+        robust_results = [r for r in results if r["total_trades"] >= 5]
+        if not robust_results:
+            # 如果全都不够 5 次，退而求其次选择所有结果
+            robust_results = results
+            
+        # 排序：胜率降序，平均单次收益降序，交易次数降序
+        robust_results.sort(key=lambda x: (x["win_rate"], x["avg_profit"], x["total_trades"]), reverse=True)
+        best = robust_results[0]
+        
+        # 保存最优参数到本地 SQLite 数据库
+        self.db.save_optimal_strategy(
+            self.code, self.name, 
+            best["buy_days"], best["buy_drop"], best["target_profit"],
+            hold_min, hold_max, 
+            best["win_rate"], best["total_trades"], best["avg_profit"]
+        )
+        
+        self.result_signal.emit({
+            "success": True,
+            "buy_days": best["buy_days"],
+            "buy_drop": best["buy_drop"],
+            "target_profit": best["target_profit"],
+            "hold_min": hold_min,
+            "hold_max": hold_max,
+            "win_rate": best["win_rate"],
+            "total_trades": best["total_trades"],
+            "avg_profit": best["avg_profit"]
+        })
+
+
+class BatchOptimalStrategyFinder(QThread):
+    """批量基金策略参数后台寻优线程"""
+    progress_signal = Signal(int, int, str)  # current_fund_idx, total_funds, current_fund_name
+    result_signal = Signal(dict)        # 结果汇总
+    
+    def __init__(self, test_funds, history_cache, db=None):
+        super().__init__()
+        self.test_funds = test_funds  # list of (code, name)
+        self.history_cache = history_cache
+        self.db = db if db else FundHistoryDB()
+        
+    def run(self):
+        total_funds = len(self.test_funds)
+        success_count = 0
+        
+        for idx, (code, name) in enumerate(self.test_funds):
+            if self.isInterruptionRequested():
+                return
+                
+            self.progress_signal.emit(idx + 1, total_funds, name)
+            
+            history_data = self.history_cache.get(code)
+            if not history_data:
+                history_data = self.db.get_history(code)
+                
+            if not history_data or not history_data.get('navs'):
+                continue
+                
+            all_navs = history_data.get('navs', [])[::-1]
+            
+            if len(all_navs) < 20:
+                continue
+                
+            # 自变量搜索空间
+            buy_days_list = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+            buy_drop_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+            target_profit_list = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+            
+            hold_min = 7
+            hold_max = 90
+            
+            results = []
+            
+            for buy_days in buy_days_list:
+                if self.isInterruptionRequested():
+                    return
+                for buy_drop_pct in buy_drop_list:
+                    for target_profit_pct in target_profit_list:
+                        buy_drop = buy_drop_pct / 100.0
+                        target_profit = target_profit_pct / 100.0
+                        
+                        trades = []
+                        i = buy_days
+                        while i < len(all_navs):
+                            nav_today = all_navs[i]
+                            nav_past_max = max(all_navs[i - buy_days : i + 1])
+                            drop = (nav_today - nav_past_max) / nav_past_max
+                            
+                            if drop <= -buy_drop:
+                                buy_nav = nav_today
+                                success = False
+                                actual_hold = 0
+                                sell_idx = i
+                                sell_nav = buy_nav
+                                
+                                for j in range(1, len(all_navs) - i):
+                                    current_nav = all_navs[i + j]
+                                    profit = (current_nav - buy_nav) / buy_nav
+                                    
+                                    target = target_profit + 0.015 if j < 7 else target_profit
+                                    if profit >= target:
+                                        success = True
+                                        actual_hold = j
+                                        sell_idx = i + j
+                                        sell_nav = current_nav
+                                        break
+                                        
+                                    if j >= hold_max:
+                                        actual_hold = j
+                                        sell_idx = i + j
+                                        sell_nav = current_nav
+                                        break
+                                else:
+                                    actual_hold = len(all_navs) - 1 - i
+                                    if actual_hold > 0:
+                                        sell_idx = len(all_navs) - 1
+                                        sell_nav = all_navs[sell_idx]
+                                        
+                                final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0
+                                if actual_hold < 7:
+                                    final_profit -= 0.015
+                                    
+                                trades.append({
+                                    'success': success,
+                                    'profit': final_profit
+                                })
+                                i = sell_idx + 1
+                            else:
+                                i += 1
+                                
+                        total_trades = len(trades)
+                        if total_trades == 0:
+                            continue
+                            
+                        wins = sum(1 for t in trades if t['success'])
+                        win_rate = wins / total_trades * 100.0
+                        avg_profit = sum(t['profit'] for t in trades) / total_trades * 100.0
+                        
+                        results.append({
+                            'buy_days': buy_days,
+                            'buy_drop': buy_drop_pct,
+                            'target_profit': target_profit_pct,
+                            'win_rate': win_rate,
+                            'total_trades': total_trades,
+                            'avg_profit': avg_profit
+                        })
+            
+            if not results:
+                continue
+                
+            robust_results = [r for r in results if r['total_trades'] >= 5]
+            if not robust_results:
+                robust_results = results
+                
+            robust_results.sort(key=lambda x: (x['win_rate'], x['avg_profit'], x['total_trades']), reverse=True)
+            best = robust_results[0]
+            
+            self.db.save_optimal_strategy(
+                code, name, 
+                best['buy_days'], best['buy_drop'], best['target_profit'],
+                hold_min, hold_max, 
+                best['win_rate'], best['total_trades'], best['avg_profit']
+            )
+            success_count += 1
+            
+        self.result_signal.emit({'success_count': success_count, 'total_funds': total_funds})

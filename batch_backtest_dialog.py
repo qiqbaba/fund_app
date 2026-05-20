@@ -1,16 +1,15 @@
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QFormLayout, QMessageBox, QGroupBox, QTableWidget,
                                QTableWidgetItem, QHeaderView, QCheckBox, QProgressBar)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
+from threads import BatchOptimalStrategyFinder
 
-class BatchBacktestDialog(QDialog):
-    def __init__(self, fund_lists, history_cache, db, parent=None):
+class BatchBacktestWidget(QWidget):
+    def __init__(self, get_fund_lists_cb, history_cache, db, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("批量策略回测")
-        self.resize(1000, 700)
         
-        self.fund_lists = fund_lists
+        self.get_fund_lists_cb = get_fund_lists_cb
         self.history_cache = history_cache
         self.db = db
         self.batch_trades_cache = {} # code -> (name, trades, date_range)
@@ -73,6 +72,11 @@ class BatchBacktestDialog(QDialog):
         params_layout.addRow(sell_layout)
         params_layout.addRow(early_sell_layout)
         
+        self.use_opt_checkbox = QCheckBox("🔥 优先应用每只基金在本地的个性化最优参数 (若无则使用上述通用参数)")
+        self.use_opt_checkbox.setChecked(True)
+        self.use_opt_checkbox.setStyleSheet("color: #d35400; font-weight: bold; margin-top: 5px;")
+        params_layout.addRow(self.use_opt_checkbox)
+        
         # 测试范围
         scope_group = QGroupBox("选择要测试的基金列表")
         scope_layout = QHBoxLayout()
@@ -94,7 +98,15 @@ class BatchBacktestDialog(QDialog):
         btn_run = QPushButton("▶ 开始批量回测")
         btn_run.setStyleSheet("background-color: #0097e6; color: white; padding: 5px; font-weight: bold;")
         btn_run.clicked.connect(self.run_batch_backtest)
-        params_layout.addRow(btn_run)
+        
+        self.btn_optimize_all = QPushButton("🔍 批量自动寻优最佳参数")
+        self.btn_optimize_all.setStyleSheet("background-color: #f39c12; color: white; padding: 5px; font-weight: bold;")
+        self.btn_optimize_all.clicked.connect(self.run_batch_optimize)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(btn_run)
+        btn_layout.addWidget(self.btn_optimize_all)
+        params_layout.addRow(btn_layout)
         
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
@@ -106,16 +118,12 @@ class BatchBacktestDialog(QDialog):
 
         # 结果统计表格
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels(["基金代码", "基金名称", "触发次数", "成功止盈", "胜率", "平均单次收益", "年均止盈", "最长持有"])
+        self.table.setColumnCount(9)
+        self.table.setHorizontalHeaderLabels(["基金代码", "基金名称", "回测参数", "触发次数", "成功止盈", "胜率", "平均单次收益", "年均止盈", "最长持有"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(self.show_fund_details)
         layout.addWidget(self.table)
-
-        btn_close = QPushButton("关闭")
-        btn_close.clicked.connect(self.close)
-        layout.addWidget(btn_close)
 
     def run_batch_backtest(self):
         try:
@@ -131,20 +139,22 @@ class BatchBacktestDialog(QDialog):
 
         force_sell = self.force_sell_checkbox.isChecked()
         early_sell = self.early_sell_checkbox.isChecked()
+        use_opt = self.use_opt_checkbox.isChecked()
 
         # 确定测试的基金列表
+        fund_lists = self.get_fund_lists_cb()
         test_funds_dict = {}
         if self.cb_tab0.isChecked():
-            for code, name in self.fund_lists.get("特别关注", []):
+            for code, name in fund_lists.get("特别关注", []):
                 test_funds_dict[code] = name
         if self.cb_tab1.isChecked():
-            for code, name in self.fund_lists.get("我的自选基金", []):
+            for code, name in fund_lists.get("我的自选基金", []):
                 test_funds_dict[code] = name
         if self.cb_tab2.isChecked():
-            for code, name in self.fund_lists.get("今日指数ETF独立涨跌榜", []):
+            for code, name in fund_lists.get("今日指数ETF独立涨跌榜", []):
                 test_funds_dict[code] = name
         if self.cb_tab3.isChecked():
-            for code, name in self.fund_lists.get("估值榜", []):
+            for code, name in fund_lists.get("估值榜", []):
                 test_funds_dict[code] = name
 
         test_funds = list(test_funds_dict.items())
@@ -165,6 +175,24 @@ class BatchBacktestDialog(QDialog):
         for idx, (code, name) in enumerate(test_funds):
             self.progress_bar.setValue(idx)
             
+            # 使用最优参数
+            cur_buy_days = buy_days
+            cur_buy_drop = buy_drop
+            cur_hold_min = hold_min
+            cur_hold_max = hold_max
+            cur_target_profit = target_profit
+            cur_early_profit = early_profit
+            
+            if use_opt:
+                opt = self.db.get_optimal_strategy(code)
+                if opt:
+                    cur_buy_days = opt["buy_days"]
+                    cur_buy_drop = opt["buy_drop"] / 100.0
+                    cur_hold_min = opt["hold_min"]
+                    cur_hold_max = opt["hold_max"]
+                    cur_target_profit = opt["target_profit"] / 100.0
+                    cur_early_profit = cur_target_profit
+            
             history_data = self.history_cache.get(code)
             if not history_data:
                 history_data = self.db.get_history(code)
@@ -175,64 +203,75 @@ class BatchBacktestDialog(QDialog):
             all_navs = history_data.get("navs", [])[::-1]
             all_dates = history_data.get("dates", [])[::-1]
             
-            if len(all_navs) < buy_days + 1:
+            if len(all_navs) < cur_buy_days + 1:
                 continue
 
             # 开始单只基金的回测
             trades = []
-            i = buy_days
+            i = cur_buy_days
             while i < len(all_navs):
                 nav_today = all_navs[i]
-                nav_past_max = max(all_navs[i - buy_days : i + 1])
+                nav_past_max = max(all_navs[i - cur_buy_days : i + 1])
                 drop = (nav_today - nav_past_max) / nav_past_max
                 
-                if drop <= -buy_drop:
+                if drop <= -cur_buy_drop:
                     buy_nav = nav_today
                     success = False
                     actual_hold = 0
                     sell_idx = i
                     sell_nav = buy_nav
+                    sell_date = all_dates[i]
                     
                     for j in range(1, len(all_navs) - i):
                         current_nav = all_navs[i + j]
                         profit = (current_nav - buy_nav) / buy_nav
                         
-                        if j < hold_min:
-                            if early_sell and profit >= early_profit:
+                        target = cur_target_profit + 0.015 if j < 7 else cur_target_profit
+                        
+                        if j < cur_hold_min:
+                            early_target = cur_early_profit + 0.015 if j < 7 else cur_early_profit
+                            if early_sell and profit >= early_target:
                                 success = True
                                 actual_hold = j
                                 sell_idx = i + j
                                 sell_nav = current_nav
+                                sell_date = all_dates[sell_idx]
                                 break
                         else:
-                            if profit >= target_profit:
+                            if profit >= target:
                                 success = True
                                 actual_hold = j
                                 sell_idx = i + j
                                 sell_nav = current_nav
+                                sell_date = all_dates[sell_idx]
                                 break
                                 
-                        if force_sell and j >= hold_max:
+                        if force_sell and j >= cur_hold_max:
                             actual_hold = j
                             sell_idx = i + j
                             sell_nav = current_nav
+                            sell_date = all_dates[sell_idx]
                             break
                     else:
                         actual_hold = len(all_navs) - 1 - i
                         if actual_hold > 0:
                             sell_idx = len(all_navs) - 1
                             sell_nav = all_navs[sell_idx]
+                            sell_date = all_dates[sell_idx]
                     
                     final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0
+                    if actual_hold < 7:
+                        final_profit -= 0.015
+                        
                     trades.append({
                         "buy_date": all_dates[i],
                         "buy_nav": buy_nav,
-                        "sell_date": sell_date if 'sell_date' in locals() else all_dates[sell_idx],
+                        "sell_date": sell_date,
                         "sell_nav": sell_nav,
                         "hold_days": actual_hold,
                         "profit": final_profit,
                         "success": success,
-                        "is_force_sell": force_sell and not success and actual_hold >= hold_max
+                        "is_force_sell": force_sell and not success and actual_hold >= cur_hold_max
                     })
                     
                     i = sell_idx + 1
@@ -254,7 +293,8 @@ class BatchBacktestDialog(QDialog):
                 years = total_days / 250.0 if total_days > 0 else 1.0
                 avg_wins_per_yr = wins / years
                 max_hold = max(t["hold_days"] for t in trades)
-                results.append((code, name, total_trades, wins, win_rate, avg_profit, avg_wins_per_yr, max_hold))
+                param_str = f"买跌({cur_buy_days}天>{cur_buy_drop*100:.1f}%) 盈(>{cur_target_profit*100:.1f}%)"
+                results.append((code, name, param_str, total_trades, wins, win_rate, avg_profit, avg_wins_per_yr, max_hold))
 
         self.progress_bar.setValue(len(test_funds))
         self.progress_bar.setVisible(False)
@@ -262,23 +302,24 @@ class BatchBacktestDialog(QDialog):
         # 填充表格
         self.table.setRowCount(len(results))
         for r_idx, res in enumerate(results):
-            code, name, total_trades, wins, win_rate, avg_profit, avg_wins_per_yr, max_hold = res
+            code, name, param_str, total_trades, wins, win_rate, avg_profit, avg_wins_per_yr, max_hold = res
             
             self.table.setItem(r_idx, 0, QTableWidgetItem(code))
             self.table.setItem(r_idx, 1, QTableWidgetItem(name))
+            self.table.setItem(r_idx, 2, QTableWidgetItem(param_str))
             
             item_total = QTableWidgetItem()
             item_total.setData(Qt.DisplayRole, total_trades)
-            self.table.setItem(r_idx, 2, item_total)
+            self.table.setItem(r_idx, 3, item_total)
             
             item_wins = QTableWidgetItem()
             item_wins.setData(Qt.DisplayRole, wins)
-            self.table.setItem(r_idx, 3, item_wins)
+            self.table.setItem(r_idx, 4, item_wins)
             
             item_rate = QTableWidgetItem()
             item_rate.setData(Qt.DisplayRole, win_rate)
             item_rate.setText(f"{win_rate:.2f}%")
-            self.table.setItem(r_idx, 4, item_rate)
+            self.table.setItem(r_idx, 5, item_rate)
             
             item_profit = QTableWidgetItem()
             item_profit.setData(Qt.DisplayRole, avg_profit)
@@ -287,17 +328,17 @@ class BatchBacktestDialog(QDialog):
                 item_profit.setForeground(QColor("#c0392b"))
             elif avg_profit < 0:
                 item_profit.setForeground(QColor("#27ae60"))
-            self.table.setItem(r_idx, 5, item_profit)
+            self.table.setItem(r_idx, 6, item_profit)
             
             item_avg_wins = QTableWidgetItem()
             item_avg_wins.setData(Qt.DisplayRole, avg_wins_per_yr)
             item_avg_wins.setText(f"{avg_wins_per_yr:.1f}")
-            self.table.setItem(r_idx, 6, item_avg_wins)
+            self.table.setItem(r_idx, 7, item_avg_wins)
             
             item_max_hold = QTableWidgetItem()
             item_max_hold.setData(Qt.DisplayRole, max_hold)
             item_max_hold.setText(f"{max_hold}")
-            self.table.setItem(r_idx, 7, item_max_hold)
+            self.table.setItem(r_idx, 8, item_max_hold)
             
         self.table.setSortingEnabled(True)
 
@@ -354,3 +395,52 @@ class BatchBacktestDialog(QDialog):
             detail_table.setItem(idx, 6, result_item)
             
         dialog.exec()
+
+    def run_batch_optimize(self):
+        fund_lists = self.get_fund_lists_cb()
+        test_funds_dict = {}
+        if self.cb_tab0.isChecked():
+            for code, name in fund_lists.get("特别关注", []):
+                test_funds_dict[code] = name
+        if self.cb_tab1.isChecked():
+            for code, name in fund_lists.get("我的自选基金", []):
+                test_funds_dict[code] = name
+        if self.cb_tab2.isChecked():
+            for code, name in fund_lists.get("今日指数ETF独立涨跌榜", []):
+                test_funds_dict[code] = name
+        if self.cb_tab3.isChecked():
+            for code, name in fund_lists.get("估值榜", []):
+                test_funds_dict[code] = name
+
+        test_funds = list(test_funds_dict.items())
+
+        if not test_funds:
+            QMessageBox.information(self, "提示", "没有符合条件的基金需要寻优。")
+            return
+
+        self.btn_optimize_all.setEnabled(False)
+        self.btn_optimize_all.setText("正在准备批量寻优...")
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(len(test_funds))
+        self.progress_bar.setValue(0)
+        
+        self.batch_finder = BatchOptimalStrategyFinder(test_funds, self.history_cache, self.db)
+        self.batch_finder.progress_signal.connect(self.on_batch_optimize_progress)
+        self.batch_finder.result_signal.connect(self.on_batch_optimize_result)
+        self.batch_finder.start()
+        
+    def on_batch_optimize_progress(self, current, total, name):
+        self.progress_bar.setValue(current)
+        self.btn_optimize_all.setText(f"正在寻优 ({current}/{total}): {name}")
+        
+    def on_batch_optimize_result(self, result):
+        self.progress_bar.setVisible(False)
+        self.btn_optimize_all.setEnabled(True)
+        self.btn_optimize_all.setText("🔍 批量自动寻优最佳参数")
+        
+        success_count = result.get("success_count", 0)
+        total = result.get("total_funds", 0)
+        
+        QMessageBox.information(self, "批量寻优完成", f"批量寻优完成！\n成功为 {success_count} 只基金找到并保存最优参数，共检查 {total} 只。")
+        self.run_batch_backtest()
