@@ -1,55 +1,98 @@
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QLabel, 
                                QGroupBox, QGridLayout, QCheckBox, QHBoxLayout, 
-                               QPushButton, QMessageBox, QVBoxLayout, QWidget)
+                               QPushButton, QMessageBox, QVBoxLayout, QWidget,
+                               QTabWidget)
 from PySide6.QtGui import QPainter, QPolygonF, QPen, QColor, QFont, QLinearGradient
 from PySide6.QtCore import Qt, QRect, QPointF
 import datetime
 
 class SettingsDialog(QDialog):
     """自定义设置弹窗"""
-    def __init__(self, config, current_headers, parent=None):
+    def __init__(self, config, current_headers, val_headers, parent=None):
         super().__init__(parent)
         self.setWindowTitle("自定义参数与列显示设置")
-        self.resize(520, 250)
+        self.resize(650, 480)
         self.config = config
         self.current_headers = current_headers
+        self.val_headers = val_headers
         
-        layout = QFormLayout(self)
+        main_layout = QVBoxLayout(self)
+        
+        # 参数设置区域
+        param_group = QGroupBox("量化分析参数")
+        param_layout = QFormLayout(param_group)
         
         self.drop_input = QLineEdit(", ".join(map(str, config.get("drop_days", [2, 4]))))
         self.pct_input = QLineEdit(", ".join(map(str, config.get("percentile_months", [1, 2, 3, 6, 12, 24]))))
         
-        layout.addRow(QLabel("跌幅计算天数 (逗号分隔):"), self.drop_input)
-        layout.addRow(QLabel("百分位计算月数 (逗号分隔):"), self.pct_input)
+        param_layout.addRow(QLabel("跌幅计算天数 (逗号分隔):"), self.drop_input)
+        param_layout.addRow(QLabel("百分位计算月数 (逗号分隔):"), self.pct_input)
+        main_layout.addWidget(param_group)
         
-        self.col_group = QGroupBox("表格列显示设置 (取消勾选即可隐藏)")
-        grid = QGridLayout()
-        self.checkboxes = {}
+        # 各 Tab 列显示设置区域
+        col_group = QGroupBox("表格列显示配置 (取消勾选即可隐藏)")
+        col_layout = QVBoxLayout(col_group)
         
-        hidden_cols = config.get("hidden_columns", [])
+        self.tab_widget = QTabWidget()
+        self.checkboxes = {} # tab_key -> {header: checkbox}
         
-        row, col = 0, 0
-        for h in current_headers:
-            if h == "操作": continue 
-            cb = QCheckBox(h)
-            cb.setChecked(h not in hidden_cols) 
-            self.checkboxes[h] = cb
-            grid.addWidget(cb, row, col)
+        # 兼容性读取字典格式
+        hidden_cols_config = config.get("hidden_columns", {})
+        if not isinstance(hidden_cols_config, dict):
+            old_list = list(hidden_cols_config) if isinstance(hidden_cols_config, list) else []
+            hidden_cols_config = {
+                "special": list(old_list),
+                "my_fund": list(old_list),
+                "ranking": list(old_list),
+                "valuation": list(old_list),
+                "other": list(old_list)
+            }
             
-            col += 1
-            if col > 3: 
-                col = 0
-                row += 1
-                
-        self.col_group.setLayout(grid)
-        layout.addRow(self.col_group)
+        tabs_info = [
+            ("special", "🔥 特别关注", self.current_headers),
+            ("my_fund", "⭐ 我的自选基金", self.current_headers),
+            ("ranking", "📈 今日指数ETF独立涨跌榜", self.current_headers),
+            ("valuation", "💎 估值榜", self.val_headers),
+            ("other", "📦 其他(已有数据)", self.current_headers)
+        ]
         
+        for tab_key, tab_title, tab_headers in tabs_info:
+            tab_widget = QWidget()
+            grid = QGridLayout(tab_widget)
+            grid.setContentsMargins(10, 10, 10, 10)
+            grid.setSpacing(8)
+            
+            tab_checkboxes = {}
+            hidden_cols = hidden_cols_config.get(tab_key, [])
+            
+            row, col = 0, 0
+            for h in tab_headers:
+                if h == "操作": continue
+                cb = QCheckBox(h)
+                cb.setChecked(h not in hidden_cols)
+                tab_checkboxes[h] = cb
+                grid.addWidget(cb, row, col)
+                
+                col += 1
+                if col > 2: # 每行显示3个勾选框
+                    col = 0
+                    row += 1
+                    
+            tab_widget.setLayout(grid)
+            self.tab_widget.addTab(tab_widget, tab_title)
+            self.checkboxes[tab_key] = tab_checkboxes
+            
+        col_layout.addWidget(self.tab_widget)
+        main_layout.addWidget(col_group)
+        
+        # 底部按钮
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("保存配置")
-        save_btn.setStyleSheet("background-color: #0097e6; color: white;")
+        save_btn.setFixedHeight(35)
+        save_btn.setStyleSheet("background-color: #0097e6; color: white; font-weight: bold;")
         save_btn.clicked.connect(self.save_and_accept)
         btn_layout.addWidget(save_btn)
-        layout.addRow(btn_layout)
+        main_layout.addLayout(btn_layout)
 
     def save_and_accept(self):
         try:
@@ -58,9 +101,11 @@ class SettingsDialog(QDialog):
             self.config["drop_days"] = drops if drops else [2, 4]
             self.config["percentile_months"] = pcts if pcts else [1, 2, 3, 6, 12, 24]
             
-            hidden_cols = [h for h, cb in self.checkboxes.items() if not cb.isChecked()]
-            self.config["hidden_columns"] = hidden_cols
+            hidden_cols_config = {}
+            for tab_key, tab_checkboxes in self.checkboxes.items():
+                hidden_cols_config[tab_key] = [h for h, cb in tab_checkboxes.items() if not cb.isChecked()]
             
+            self.config["hidden_columns"] = hidden_cols_config
             self.accept()
         except Exception:
             QMessageBox.warning(self, "错误", "请输入正确的数字格式！")

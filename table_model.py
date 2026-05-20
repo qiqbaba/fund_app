@@ -350,12 +350,18 @@ class FundTableDelegate(QStyledItemDelegate):
         header = model.headers[column] if column < len(model.headers) else ""
         
         # 对需要换行的列计算自适应高度
-        if header in ["基金名称", "基金板块", "最优参数", "持有金额/\n收益率"]:
+        if header in ["基金名称", "基金板块", "最优参数", "持有金额/\n收益率", "估值状态\n(PE/PB)"]:
             data = index.data(Qt.DisplayRole)
             if data:
                 doc = QTextDocument()
                 # 根据列类型设置合适的文本宽度
-                width_map = {"基金名称": 176, "基金板块": 96, "最优参数": 116, "持有金额/\n收益率": 81}
+                width_map = {
+                    "基金名称": 176, 
+                    "基金板块": 96, 
+                    "最优参数": 116, 
+                    "持有金额/\n收益率": 81,
+                    "估值状态\n(PE/PB)": 81
+                }
                 text_width = width_map.get(header, 100)
                 doc.setTextWidth(text_width)
                 doc.setHtml(f"<div>{str(data)}</div>")
@@ -384,7 +390,7 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 估值榜状态颜色
         if self.table_type == "valuation":
-            if header == "持有金额/\n收益率":
+            if header in ["持有金额/\n收益率", "估值状态\n(PE/PB)"]:
                 if "低估" in str(data):
                     return QColor("#27ae60")  # 绿色背景
                 elif "高估" in str(data):
@@ -436,7 +442,7 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 估值榜状态颜色 - 使用白色文字增强对比
         if self.table_type == "valuation":
-            if header == "持有金额/\n收益率":
+            if header in ["持有金额/\n收益率", "估值状态\n(PE/PB)"]:
                 if any(x in str(data) for x in ["低估", "高估", "适中"]):
                     return QColor("#ffffff")
         

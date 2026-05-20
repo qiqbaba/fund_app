@@ -258,20 +258,48 @@ class FundApp(QMainWindow):
     def rebuild_table_headers(self):
         self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "最优参数", "持有金额/\n收益率", 
                         "昨日净值", "净值日期", "实时估值", "今日收益/\n收益率"]
+        self.val_headers = ["序号", "估值标签", "基金代码", "基金名称", "基金板块", "最优参数", "估值状态\n(PE/PB)", 
+                            "昨日净值", "净值日期", "实时估值", "今日收益/\n收益率"]
         
         self.drop_days = self.config.get("drop_days", [2, 4])
         self.pct_months = self.config.get("percentile_months", [1, 2, 3, 6, 12, 24])
         
-        for d in self.drop_days: self.headers.append(f"近{d}日\n涨跌")
-        for m in self.pct_months: self.headers.append(f"近{m}月\n百分位")
+        for d in self.drop_days: 
+            self.headers.append(f"近{d}日\n涨跌")
+            self.val_headers.append(f"近{d}日\n涨跌")
+        for m in self.pct_months: 
+            self.headers.append(f"近{m}月\n百分位")
+            self.val_headers.append(f"近{m}月\n百分位")
+            
         self.headers.extend(["趋势", "更新时间", "操作"])
+        self.val_headers.extend(["趋势", "更新时间", "操作"])
         
-        hidden_cols = self.config.get("hidden_columns", [])
+        # 兼容性升级 hidden_columns 为分 Tab 字典格式
+        hidden_cols_config = self.config.get("hidden_columns", {})
+        if not isinstance(hidden_cols_config, dict):
+            old_list = list(hidden_cols_config) if isinstance(hidden_cols_config, list) else []
+            hidden_cols_config = {
+                "special": list(old_list),
+                "my_fund": list(old_list),
+                "ranking": list(old_list),
+                "valuation": list(old_list),
+                "other": list(old_list)
+            }
+            # 特殊处理估值榜上的老列名转换
+            if "持有" in hidden_cols_config["valuation"]:
+                hidden_cols_config["valuation"].remove("持有")
+                hidden_cols_config["valuation"].append("估值标签")
+            if "持有金额/\n收益率" in hidden_cols_config["valuation"]:
+                hidden_cols_config["valuation"].remove("持有金额/\n收益率")
+                hidden_cols_config["valuation"].append("估值状态\n(PE/PB)")
+            self.config["hidden_columns"] = hidden_cols_config
+            self.need_config_save = True
         
         # 创建模型和代理
         for table, table_type in [(self.table0, "special"), (self.table1, "my_fund"), 
                                   (self.table2, "ranking"), (self.table3, "valuation"), (self.table_other, "other")]:
-            model = FundTableModel(self.headers, parent=self)
+            table_headers = self.val_headers if table_type == "valuation" else self.headers
+            model = FundTableModel(table_headers, parent=self)
             delegate = FundTableDelegate(table_type=table_type, parent=self)
             
             # 为了避免 Qt 在 setModel 时触发旧列的错误排序，先禁用排序
@@ -305,22 +333,23 @@ class FundApp(QMainWindow):
             table.setColumnWidth(10, 85)
             
             # 减小数据列宽度
-            for col_idx in range(11, len(self.headers) - 3):
+            for col_idx in range(11, len(table_headers) - 3):
                 table.setColumnWidth(col_idx, 65)
             
-            trend_col_index = len(self.headers) - 3
+            trend_col_index = len(table_headers) - 3
             table.setColumnWidth(trend_col_index, 80)
             
-            time_col_index = len(self.headers) - 2
+            time_col_index = len(table_headers) - 2
             table.setColumnWidth(time_col_index, 130)
             
-            action_col_index = len(self.headers) - 1
+            action_col_index = len(table_headers) - 1
             header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
             table.setColumnWidth(action_col_index, 60)
             
             # 隐藏指定列
-            for i, h in enumerate(self.headers):
-                table.setColumnHidden(i, h in hidden_cols)
+            table_hidden_cols = hidden_cols_config.get(table_type, [])
+            for i, h in enumerate(table_headers):
+                table.setColumnHidden(i, h in table_hidden_cols)
             
             # 保存模型和代理引用
             if table == self.table0:
@@ -417,7 +446,7 @@ class FundApp(QMainWindow):
         old_drops = list(self.config.get("drop_days", []))
         old_pcts = list(self.config.get("percentile_months", []))
         
-        dialog = SettingsDialog(self.config, self.headers, self)
+        dialog = SettingsDialog(self.config, self.headers, self.val_headers, self)
         if dialog.exec():
             self.save_config()
             
@@ -427,10 +456,17 @@ class FundApp(QMainWindow):
                 self.refresh_data()
             else:
                 # 如果仅仅是显示/隐藏列变化，不需要重建 model，直接更新视图即可，避免数据消失
-                hidden_cols = self.config.get("hidden_columns", [])
-                for table in [self.table0, self.table1, self.table2, self.table3, self.table_other]:
-                    for i, h in enumerate(self.headers):
-                        table.setColumnHidden(i, h in hidden_cols)
+                hidden_cols_config = self.config.get("hidden_columns", {})
+                for table, table_type, table_headers in [
+                    (self.table0, "special", self.headers), 
+                    (self.table1, "my_fund", self.headers), 
+                    (self.table2, "ranking", self.headers), 
+                    (self.table3, "valuation", self.val_headers), 
+                    (self.table_other, "other", self.headers)
+                ]:
+                    table_hidden_cols = hidden_cols_config.get(table_type, [])
+                    for i, h in enumerate(table_headers):
+                        table.setColumnHidden(i, h in table_hidden_cols)
 
     def get_fund_lists(self):
         return {
@@ -1076,14 +1112,14 @@ class FundApp(QMainWindow):
                 fetch_codes.append(fund_code)
                 
                 row_data = {}
-                for header in self.headers:
+                for header in self.val_headers:
                     row_data[header] = "-"
                 
                 row_data["序号"] = str(i + 1)
                 
                 # col 1: 估值标签（PE最高/PB最低等）
                 tag_text = item.get("valuation_tag", "")
-                row_data["持有"] = tag_text
+                row_data["估值标签"] = tag_text
                 
                 row_data["基金代码"] = fund_code
                 row_data["基金名称"] = index_name
@@ -1122,7 +1158,7 @@ class FundApp(QMainWindow):
                 except: pass
                 
                 display_info = f"{status}\nPE:{pe_val} ({pe_pct_str}%)\nPB:{pb_val} ({pb_pct_str}%)"
-                row_data["持有金额/\n收益率"] = display_info
+                row_data["估值状态\n(PE/PB)"] = display_info
                 
                 row_data["操作"] = "➕关注" if fund_code not in self.config.get("funds_info", {}) else "已添加"
                 
