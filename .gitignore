@@ -7,3 +7,7 @@ high_pe.json
 history_pe.json
 index_funds.json
 output.json
+
+# 本地历史数据库
+fund_history.db
+
