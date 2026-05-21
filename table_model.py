@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF, QSortFilterProxyModel
 from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, 
                                QLineEdit, QPushButton, QHBoxLayout, QStyle)
@@ -187,6 +187,71 @@ class FundTableModel(QAbstractTableModel):
         for row in sorted(rows, reverse=True):
             self.remove_row(row)
         return True
+
+
+class FundFilterProxyModel(QSortFilterProxyModel):
+    """基金过滤代理模型 - 支持按名称或代码过滤"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.setFilterKeyColumn(-1)
+        self._filter_text = ""
+
+    @property
+    def headers(self):
+        source = self.sourceModel()
+        return source.headers if source else []
+
+    def setFilterText(self, text):
+        self._filter_text = text.strip().lower()
+        self.invalidateFilter()
+        
+    def filterAcceptsRow(self, source_row, source_parent):
+        if not self._filter_text:
+            return True
+            
+        model = self.sourceModel()
+        
+        # 查找基金代码和名称列的索引
+        code_col = -1
+        name_col = -1
+        for i, header in enumerate(model.headers):
+            if "代码" in header:
+                code_col = i
+            elif "名称" in header:
+                name_col = i
+                
+        if code_col != -1:
+            code = str(model.data(model.index(source_row, code_col, source_parent), Qt.DisplayRole)).lower()
+            if self._filter_text in code:
+                return True
+                
+        if name_col != -1:
+            name = str(model.data(model.index(source_row, name_col, source_parent), Qt.DisplayRole)).lower()
+            if self._filter_text in name:
+                return True
+                
+        return False
+
+    def get_row_data(self, proxy_row):
+        """获取代理行对应的源数据"""
+        source_index = self.mapToSource(self.index(proxy_row, 0))
+        return self.sourceModel().get_row_data(source_index.row())
+
+    def find_row_by_code(self, code):
+        """在当前过滤后的视图中查找基金代码对应的代理行号"""
+        for i in range(self.rowCount()):
+            source_index = self.mapToSource(self.index(i, 0))
+            if self.sourceModel().get_row_data(source_index.row()).get("基金代码") == code:
+                return i
+        return -1
+
+    def sort(self, column, order=Qt.AscendingOrder):
+        """重写代理模型的排序，直接委托给底层的源数据模型排序以维持置顶与高级排序逻辑"""
+        source = self.sourceModel()
+        if source:
+            source.sort(column, order)
 
 
 class FundTableDelegate(QStyledItemDelegate):

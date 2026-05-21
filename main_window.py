@@ -19,7 +19,7 @@ from widgets import SettingsDialog, FundChartDialog, StrategyNotificationToast
 from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
 from db_manager import FundHistoryDB
 from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
-                         HoldingInputWidget, ActionButtonWidget)
+                         HoldingInputWidget, ActionButtonWidget, FundFilterProxyModel)
 from utils import extract_fund_sector
 
 class FundApp(QMainWindow):
@@ -190,6 +190,17 @@ class FundApp(QMainWindow):
         self.tab0 = QWidget()
         layout0 = QVBoxLayout(self.tab0)
         layout0.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout0 = QHBoxLayout()
+        filter_layout0.setContentsMargins(5, 5, 5, 5)
+        self.filter_input0 = QLineEdit()
+        self.filter_input0.setPlaceholderText("🔍 在特别关注中搜索 (名称/代码)...")
+        self.filter_input0.setClearButtonEnabled(True)
+        self.filter_input0.setFixedHeight(30)
+        self.filter_input0.textChanged.connect(lambda text: self.proxy0.setFilterText(text) if hasattr(self, 'proxy0') and self.proxy0 else None)
+        filter_layout0.addWidget(self.filter_input0)
+        layout0.addLayout(filter_layout0)
+        
         self.table0 = QTableView()
         self.table0.setAlternatingRowColors(True)
         self.table0.verticalHeader().setVisible(False)
@@ -202,6 +213,17 @@ class FundApp(QMainWindow):
         self.tab1 = QWidget()
         layout1 = QVBoxLayout(self.tab1)
         layout1.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout1 = QHBoxLayout()
+        filter_layout1.setContentsMargins(5, 5, 5, 5)
+        self.filter_input1 = QLineEdit()
+        self.filter_input1.setPlaceholderText("🔍 在自选基金中搜索 (名称/代码)...")
+        self.filter_input1.setClearButtonEnabled(True)
+        self.filter_input1.setFixedHeight(30)
+        self.filter_input1.textChanged.connect(lambda text: self.proxy1.setFilterText(text) if hasattr(self, 'proxy1') and self.proxy1 else None)
+        filter_layout1.addWidget(self.filter_input1)
+        layout1.addLayout(filter_layout1)
+        
         self.table1 = QTableView()
         self.table1.setAlternatingRowColors(True)
         self.table1.verticalHeader().setVisible(False)
@@ -214,6 +236,17 @@ class FundApp(QMainWindow):
         self.tab2 = QWidget()
         layout2 = QVBoxLayout(self.tab2)
         layout2.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout2 = QHBoxLayout()
+        filter_layout2.setContentsMargins(5, 5, 5, 5)
+        self.filter_input2 = QLineEdit()
+        self.filter_input2.setPlaceholderText("🔍 在排行榜中搜索 (名称/代码)...")
+        self.filter_input2.setClearButtonEnabled(True)
+        self.filter_input2.setFixedHeight(30)
+        self.filter_input2.textChanged.connect(lambda text: self.proxy2.setFilterText(text) if hasattr(self, 'proxy2') and self.proxy2 else None)
+        filter_layout2.addWidget(self.filter_input2)
+        layout2.addLayout(filter_layout2)
+        
         self.table2 = QTableView()
         self.table2.setAlternatingRowColors(True)
         self.table2.verticalHeader().setVisible(False)
@@ -226,6 +259,17 @@ class FundApp(QMainWindow):
         self.tab3 = QWidget()
         layout3 = QVBoxLayout(self.tab3)
         layout3.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout3 = QHBoxLayout()
+        filter_layout3.setContentsMargins(5, 5, 5, 5)
+        self.filter_input3 = QLineEdit()
+        self.filter_input3.setPlaceholderText("🔍 在估值榜中搜索 (名称/代码)...")
+        self.filter_input3.setClearButtonEnabled(True)
+        self.filter_input3.setFixedHeight(30)
+        self.filter_input3.textChanged.connect(lambda text: self.proxy3.setFilterText(text) if hasattr(self, 'proxy3') and self.proxy3 else None)
+        filter_layout3.addWidget(self.filter_input3)
+        layout3.addLayout(filter_layout3)
+        
         self.table3 = QTableView()
         self.table3.setAlternatingRowColors(True)
         self.table3.verticalHeader().setVisible(False)
@@ -319,6 +363,11 @@ class FundApp(QMainWindow):
         self.model_other = None
         self.delegate_other = None
         
+        self.proxy0 = None
+        self.proxy1 = None
+        self.proxy2 = None
+        self.proxy3 = None
+        
         self.rebuild_table_headers()
 
     def rebuild_table_headers(self):
@@ -370,10 +419,19 @@ class FundApp(QMainWindow):
             
             # 为了避免 Qt 在 setModel 时触发旧列的错误排序，先禁用排序
             table.setSortingEnabled(False)
-            table.setModel(model)
+            
+            # 使用代理模型支持过滤
+            if table_type in ["special", "my_fund", "ranking", "valuation"]:
+                proxy = FundFilterProxyModel(self)
+                proxy.setSourceModel(model)
+                table.setModel(proxy)
+            else:
+                proxy = None
+                table.setModel(model)
+                
             table.setItemDelegate(delegate)
             
-            # 启用排序
+            # 启用排序 (在代理模型上排序)
             table.setSortingEnabled(True)
             
             # 配置列
@@ -421,15 +479,19 @@ class FundApp(QMainWindow):
             if table == self.table0:
                 self.model0 = model
                 self.delegate0 = delegate
+                self.proxy0 = proxy
             elif table == self.table1:
                 self.model1 = model
                 self.delegate1 = delegate
+                self.proxy1 = proxy
             elif table == self.table2:
                 self.model2 = model
                 self.delegate2 = delegate
+                self.proxy2 = proxy
             elif table == self.table3:
                 self.model3 = model
                 self.delegate3 = delegate
+                self.proxy3 = proxy
             else:  # table_other
                 self.model_other = model
                 self.delegate_other = delegate
@@ -903,15 +965,19 @@ class FundApp(QMainWindow):
         model.update_row(row, row_data)
 
     def get_row_by_code(self, table, code):
-        """查找表格中第一个匹配代码的行号"""
+        """查找表格中第一个匹配代码的行号 (返回源模型行号)"""
         model = table.model()
+        if model and hasattr(model, 'sourceModel'):
+            return model.sourceModel().find_row_by_code(code)
         if model and hasattr(model, 'find_row_by_code'):
             return model.find_row_by_code(code)
         return -1
 
     def get_all_rows_by_code(self, table, code):
-        """返回表格中所有匹配该代码的行号列表"""
+        """返回表格中所有匹配该代码的源模型行号列表"""
         model = table.model()
+        if model and hasattr(model, 'sourceModel'):
+            return model.sourceModel().find_all_rows_by_code(code)
         if model and hasattr(model, 'find_all_rows_by_code'):
             return model.find_all_rows_by_code(code)
         return []

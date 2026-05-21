@@ -151,7 +151,8 @@
         },
         "012725": {
             "name": "国泰中证畜牧养殖ETF联接C",
-            "sector": "畜牧"
+            "sector": "畜牧",
+            "is_special": true
         },
         "017057": {
             "name": "嘉实国证绿色电力ETF发起联接C",
@@ -325,6 +326,20 @@
             "amount": "",
             "yield_rate": "",
             "is_special": true
+        },
+        "018927": {
+            "name": "南方中证电池ETF联接C",
+            "sector": "锂电池",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
+        },
+        "017175": {
+            "name": "天弘国证绿色电力指数发起C",
+            "sector": "电力",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
         }
     },
     "drop_days": [
