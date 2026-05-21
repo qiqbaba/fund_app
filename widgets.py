@@ -411,3 +411,241 @@ class FundChartDialog(QDialog):
                 # 绘制文字
                 painter.setPen(Qt.white)
                 painter.drawText(tip_rect.adjusted(10, 5, -10, -5), Qt.AlignLeft | Qt.AlignVCenter, tip_text)
+
+
+class StrategyNotificationToast(QWidget):
+    """优雅滑入的 Glassmorphism 策略买入提醒悬浮通知窗"""
+    
+    def __init__(self, signals, main_window, parent=None):
+        from PySide6.QtCore import Qt
+        # 设为 Tool 避免在任务栏生成独立窗口，StaysOnTop 置顶，FramelessWindowHint 无边框
+        super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.signals = signals  # 激活的买入信号字典 {code: signal_info}
+        self.main_window = main_window  # 主窗口指针，用于联动跳转
+        self.setAttribute(Qt.WA_TranslucentBackground, True)  # 支持透明底色
+        
+        self.init_ui()
+        self.setup_animations()
+        
+    def init_ui(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(1, 1, 1, 1)  # 为发光边框留出 1 像素
+        
+        # 磨砂玻璃质感容器
+        self.container = QWidget(self)
+        self.container.setObjectName("ToastContainer")
+        self.container.setStyleSheet("""
+            QWidget#ToastContainer {
+                background-color: #1a202c;
+                border: 1px solid rgba(46, 213, 115, 0.85);  /* 增强绿发光圆角边框对比度 */
+                border-radius: 12px;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(16, 14, 16, 14)
+        container_layout.setSpacing(10)
+        
+        # 头部布局：小图标 + 标题 + 关闭按钮
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(6)
+        
+        icon_label = QLabel("🎯")
+        icon_label.setStyleSheet("font-size: 16px;")
+        
+        title_label = QLabel("抄底策略买入预警")
+        title_label.setStyleSheet("color: #2ed573; font-weight: bold; font-size: 13px; font-family: 'Segoe UI', 'Microsoft YaHei';")
+        
+        header_layout.addWidget(icon_label)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        close_btn = QPushButton("✕")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #a4b0be;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+                padding: 0;
+            }
+            QPushButton:hover {
+                color: #ff4757;
+            }
+        """)
+        close_btn.clicked.connect(self.fade_out)
+        header_layout.addWidget(close_btn)
+        
+        container_layout.addLayout(header_layout)
+        
+        # 分割线
+        line_top = QWidget()
+        line_top.setFixedHeight(1)
+        line_top.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        container_layout.addWidget(line_top)
+        
+        # 中部布局：显示触发买入条件的基金
+        max_display = 2
+        signal_list = list(self.signals.values())
+        
+        for idx, sig in enumerate(signal_list[:max_display]):
+            name = sig['fund_name']
+            code = sig['fund_code']
+            drop = sig['current_drop']
+            win = sig['win_rate']
+            
+            sig_label = QLabel(
+                f"📈 <b>{name} ({code})</b><br>"
+                f"今日估值跌幅达 <span style='color:#2ed573;font-weight:bold;'>{drop:+.2f}%</span> (触发 买{sig['buy_days']}天>{sig['buy_drop']}% 最优)<br>"
+                f"历史回测胜率: <span style='color:#ffa502;font-weight:bold;'>{win:.1f}%</span>"
+            )
+            sig_label.setStyleSheet("color: #ffffff; font-size: 11px; font-family: 'Segoe UI', 'Microsoft YaHei'; line-height: 1.4;")
+            container_layout.addWidget(sig_label)
+            
+            if idx < len(signal_list[:max_display]) - 1 or len(signal_list) > max_display:
+                item_line = QWidget()
+                item_line.setFixedHeight(1)
+                item_line.setStyleSheet("background-color: rgba(255, 255, 255, 0.12);")
+                container_layout.addWidget(item_line)
+                
+        if len(signal_list) > max_display:
+            more_label = QLabel(f"✨ 还有 {len(signal_list) - max_display} 只基金同样触发了买入条件")
+            more_label.setStyleSheet("color: #a4b0be; font-size: 10px; font-style: italic; font-family: 'Microsoft YaHei';")
+            container_layout.addWidget(more_label)
+            
+        # 底部操作区
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 4, 0, 0)
+        btn_layout.addStretch()
+        
+        view_btn = QPushButton("📊 立即前往查看")
+        view_btn.setCursor(Qt.PointingHandCursor)
+        view_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #10ac84, stop:1 #2ed573);
+                color: white;
+                font-weight: bold;
+                font-size: 11px;
+                font-family: 'Microsoft YaHei';
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f9b75, stop:1 #26af5f);
+            }
+        """)
+        view_btn.clicked.connect(self.go_to_details)
+        btn_layout.addWidget(view_btn)
+        
+        container_layout.addLayout(btn_layout)
+        layout.addWidget(self.container)
+        
+        # 动态调节高度
+        calc_height = 145 + len(signal_list[:max_display]) * 55 + (20 if len(signal_list) > max_display else 0)
+        self.setFixedSize(320, calc_height)
+        
+    def setup_animations(self):
+        from PySide6.QtCore import QPoint, QPropertyAnimation, QEasingCurve, QTimer
+        from PySide6.QtWidgets import QApplication
+        
+        # 1. 确定在屏幕右下角的位置
+        screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        
+        self.end_x = geo.right() - self.width() - 20
+        self.end_y = geo.bottom() - self.height() - 20
+        
+        self.start_x = self.end_x
+        self.start_y = geo.bottom() + 50  # 起始于屏幕底部外侧 50 像素
+        
+        self.move(self.start_x, self.start_y)
+        self.setWindowOpacity(0.0)
+        
+        # 2. 位移滑入动画
+        self.pos_anim = QPropertyAnimation(self, b"pos", self)
+        self.pos_anim.setDuration(600)
+        self.pos_anim.setStartValue(QPoint(self.start_x, self.start_y))
+        self.pos_anim.setEndValue(QPoint(self.end_x, self.end_y))
+        self.pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+        
+        # 3. 渐变淡入动画
+        self.opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self.opacity_anim.setDuration(500)
+        self.opacity_anim.setStartValue(0.0)
+        self.opacity_anim.setEndValue(1.0)
+        
+        # 4. 自动关闭定时器
+        self.timer = QTimer(self)
+        self.timer.setInterval(8000)  # 默认展示 8 秒
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.fade_out)
+        
+    def show_elegant(self):
+        self.show()
+        self.pos_anim.start()
+        self.opacity_anim.start()
+        self.timer.start()
+        
+    def enterEvent(self, event):
+        # 鼠标移入，取消自动关闭
+        self.timer.stop()
+        super().enterEvent(event)
+        
+    def leaveEvent(self, event):
+        # 鼠标移出，重新计时 4 秒后关闭
+        self.timer.setInterval(4000)
+        self.timer.start()
+        super().leaveEvent(event)
+        
+    def fade_out(self):
+        from PySide6.QtCore import QPoint, QPropertyAnimation, QEasingCurve
+        self.timer.stop()
+        
+        # 渐变淡出
+        self.fade_out_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self.fade_out_anim.setDuration(450)
+        self.fade_out_anim.setStartValue(self.windowOpacity())
+        self.fade_out_anim.setEndValue(0.0)
+        
+        # 向下滑出
+        self.slide_out_anim = QPropertyAnimation(self, b"pos", self)
+        self.slide_out_anim.setDuration(450)
+        self.slide_out_anim.setStartValue(self.pos())
+        self.slide_out_anim.setEndValue(QPoint(self.start_x, self.start_y))
+        self.slide_out_anim.setEasingCurve(QEasingCurve.InCubic)
+        
+        self.fade_out_anim.finished.connect(self.close)
+        
+        self.fade_out_anim.start()
+        self.slide_out_anim.start()
+        
+    def go_to_details(self):
+        if not self.main_window:
+            self.fade_out()
+            return
+            
+        # 切换至我的自选基金 Tab (Index 是 1)
+        self.main_window.tabs.setCurrentIndex(1)
+        
+        # 定位第一个买入信号的基金行并高亮
+        if self.signals:
+            first_code = list(self.signals.keys())[0]
+            model = self.main_window.model1
+            table = self.main_window.table1
+            
+            row = model.find_row_by_code(first_code)
+            if row != -1:
+                idx = model.index(row, 0)
+                table.scrollTo(idx)
+                table.selectRow(row)
+                
+                # 双击行以展示详细走势图
+                self.main_window.show_detailed_chart(table, idx)
+                
+        self.fade_out()

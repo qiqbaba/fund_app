@@ -7,7 +7,8 @@
         },
         "022365": {
             "name": "永赢科技智选混合发起C",
-            "sector": "科技智选发起"
+            "sector": "科技智选发起",
+            "is_special": true
         },
         "161226": {
             "name": "国投瑞银白银期货(LOF)A",
@@ -315,14 +316,15 @@
             "is_held": false,
             "amount": "",
             "yield_rate": "",
-            "is_special": true
+            "is_special": false
         },
         "014674": {
             "name": "富国中证港股通互联网ETF发起式联接C",
             "sector": "互联网",
             "is_held": false,
             "amount": "",
-            "yield_rate": ""
+            "yield_rate": "",
+            "is_special": true
         }
     },
     "drop_days": [

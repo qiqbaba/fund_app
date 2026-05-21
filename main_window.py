@@ -9,13 +9,13 @@ import threading
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLineEdit, QPushButton, QTableView, QHeaderView, 
                                QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
-                               QMenu, QStackedWidget)
+                               QMenu, QStackedWidget, QLabel)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QFont, QAction
 
 # 引入拆分出去的模块
 from config import CONFIG_FILE
-from widgets import SettingsDialog, FundChartDialog
+from widgets import SettingsDialog, FundChartDialog, StrategyNotificationToast
 from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
 from db_manager import FundHistoryDB
 from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
@@ -35,6 +35,7 @@ class FundApp(QMainWindow):
         self.fund_search_list = []
         self.shared_sector_map = {} # 新增：全局板块 API 缓存映射库
         self.need_config_save = False 
+        self.active_buy_signals = {} 
         
         # 初始化数据库并从本地加载历史数据
         self.db = FundHistoryDB()
@@ -117,6 +118,71 @@ class FundApp(QMainWindow):
         top_layout.addWidget(self.btn_auto) 
         top_layout.addWidget(self.btn_settings)
         layout.addLayout(top_layout)
+
+        # 顶部策略抄底信号预警横幅
+        self.alert_card = QWidget()
+        self.alert_card.setObjectName("AlertCard")
+        self.alert_card.setVisible(False)  # 默认无信号时隐藏
+        
+        alert_card_layout = QHBoxLayout(self.alert_card)
+        alert_card_layout.setContentsMargins(12, 8, 12, 8)
+        
+        self.alert_icon = QLabel("🚨")
+        self.alert_icon.setStyleSheet("font-size: 16px;")
+        
+        self.alert_text = QLabel("")
+        self.alert_text.setStyleSheet("""
+            QLabel {
+                color: #ffffff; 
+                font-weight: bold; 
+                font-size: 12px; 
+                font-family: 'Microsoft YaHei';
+            }
+        """)
+        
+        self.alert_btn_detail = QPushButton("🔍 查看抄底详情")
+        self.alert_btn_detail.setCursor(Qt.PointingHandCursor)
+        self.alert_btn_detail.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.25);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+                font-size: 11px;
+                font-family: 'Microsoft YaHei';
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.4);
+            }
+        """)
+        self.alert_btn_detail.clicked.connect(self.highlight_first_signal)
+        
+        self.alert_btn_close = QPushButton("✕")
+        self.alert_btn_close.setCursor(Qt.PointingHandCursor)
+        self.alert_btn_close.setFixedWidth(20)
+        self.alert_btn_close.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: rgba(255, 255, 255, 0.8);
+                border: none;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+            }
+        """)
+        self.alert_btn_close.clicked.connect(lambda: self.alert_card.setVisible(False))
+        
+        alert_card_layout.addWidget(self.alert_icon)
+        alert_card_layout.addWidget(self.alert_text)
+        alert_card_layout.addStretch()
+        alert_card_layout.addWidget(self.alert_btn_detail)
+        alert_card_layout.addWidget(self.alert_btn_close)
+        
+        layout.addWidget(self.alert_card)
 
         self.tabs = QTabWidget()
         
@@ -323,7 +389,7 @@ class FundApp(QMainWindow):
             table.setColumnWidth(0, 35)
             table.setColumnWidth(1, 35)
             table.setColumnWidth(2, 65)
-            table.setColumnWidth(3, 180)  # 基金名称，支持换行
+            table.setColumnWidth(3, 165)  # 基金名称，支持换行
             table.setColumnWidth(4, 100)  # 基金板块，支持换行
             table.setColumnWidth(5, 120)  # 最优参数，支持换行
             table.setColumnWidth(6, 85)
@@ -370,6 +436,13 @@ class FundApp(QMainWindow):
 
     def apply_styles(self):
         self.setStyleSheet("""
+            QWidget#AlertCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20bf6b, stop:1 #05c46b);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                margin-top: 5px;
+                margin-bottom: 5px;
+            }
             QMainWindow { background-color: #f5f6fa; }
             QLineEdit { border: 1px solid #dcdde1; border-radius: 4px; padding: 5px; font-size: 13px;}
             QPushButton { background-color: #0097e6; color: white; border-radius: 4px; font-weight: bold; font-size: 13px; padding: 0 15px;}
@@ -1465,6 +1538,142 @@ class FundApp(QMainWindow):
         if self.refresh_timer.isActive():
             msg += "  (自动刷新运行中...)"
         self.statusBar().showMessage(msg)
+        
+        # 抓取数据全部完成后，进行量化策略抄底信号检测
+        self.check_buy_signals()
+
+    def check_buy_signals(self):
+        """核心抄底策略条件判定算法"""
+        # 1. 保存之前已经存在的信号代码，用于判断是否有“新增”信号从而推送右下角 Toast
+        old_codes = set(self.active_buy_signals.keys()) if hasattr(self, 'active_buy_signals') else set()
+        
+        self.active_buy_signals = {}
+        all_opts = self.db.get_all_optimal_strategies()
+        if not all_opts:
+            self.alert_card.setVisible(False)
+            return
+            
+        # 2. 遍历拥有最优参数的所有基金
+        for code, opt in all_opts.items():
+            buy_days = opt.get('buy_days')
+            buy_drop_pct = opt.get('buy_drop')
+            
+            # [DEBUG MOCK] 开启调试强制触发，以验证四维立体提醒的精美视觉效果
+            DEBUG_FORCE_TRIGGER = False
+            if DEBUG_FORCE_TRIGGER and buy_drop_pct is not None:
+                buy_drop_pct = -100.0  # 使得 drop_pct <= 100.0 恒成立，百分百触发抄底
+                
+            if not buy_days or not buy_drop_pct:
+                continue
+                
+            # 获取历史净值数据
+            history_data = self.history_cache.get(code)
+            if not history_data or not history_data.get('navs'):
+                continue
+                
+            # 获取最新的实时估值
+            current_val = None
+            for model in [self.model1, self.model0, self.model2, self.model3, self.model_other]:
+                if model:
+                    row = model.find_row_by_code(code)
+                    if row != -1:
+                        row_data = model.get_row_data(row)
+                        gsz_str = row_data.get("实时估值", "-")
+                        try:
+                            # 过滤掉暂无、错误及加载中
+                            if gsz_str != "-" and not gsz_str.startswith("[") and "加载" not in gsz_str:
+                                current_val = float(gsz_str)
+                                break
+                        except ValueError:
+                            pass
+                            
+            history_navs = history_data['navs']
+            if current_val is None and history_navs:
+                current_val = history_navs[0]
+                
+            if current_val is None or not history_navs:
+                continue
+                
+            # 如果历史实际净值长度不足以支持 buy_days 交易日，则跳过
+            if len(history_navs) < buy_days:
+                continue
+                
+            # 拼装包含今日最新估值在内的完整价格序列
+            full_navs = [current_val] + history_navs
+            
+            # 计算包含今天在内的 buy_days + 1 天内的最高点
+            nav_past_max = max(full_navs[0 : buy_days + 1])
+            if nav_past_max == 0:
+                continue
+                
+            # 计算今日价格较该最高点的跌幅
+            drop_pct = (current_val - nav_past_max) / nav_past_max * 100.0
+            
+            # 策略核心买入判定：跌幅大于等于最优跌幅参数
+            if drop_pct <= -buy_drop_pct:
+                self.active_buy_signals[code] = {
+                    'fund_code': code,
+                    'fund_name': opt.get('fund_name', code),
+                    'buy_days': buy_days,
+                    'buy_drop': buy_drop_pct,
+                    'current_drop': drop_pct,
+                    'win_rate': opt.get('win_rate', 0.0),
+                    'total_trades': opt.get('total_trades', 0),
+                    'avg_profit': opt.get('avg_profit', 0.0)
+                }
+                
+        # 3. 如果有买入信号激活，更新顶部警报横幅并让其显示
+        if self.active_buy_signals:
+            count = len(self.active_buy_signals)
+            names_str = ", ".join([f"【{v['fund_name']}】" for v in list(self.active_buy_signals.values())[:3]])
+            if count > 3:
+                names_str += f" 等共 {count} 只基金"
+                
+            self.alert_text.setText(f"🚨 策略抄底信号警报：{names_str} 当前估值跌破买入临界点，触发最优抄底策略买入信号！")
+            self.alert_card.setVisible(True)
+            
+            # 通知所有模型进行数据重绘，以展示最新的最优参数发光绿色高亮
+            for model in [self.model1, self.model0, self.model2, self.model3, self.model_other]:
+                if model:
+                    model.layoutAboutToBeChanged.emit()
+                    model.layoutChanged.emit()
+            
+            # 4. 判断是否产生了“新”的买入信号，若是，则推出右下角无边框动画 Toast 通知
+            new_signals = {k: v for k, v in self.active_buy_signals.items() if k not in old_codes}
+            if new_signals:
+                # 延迟一小会儿弹出，避开数据渲染时的微小抖动，确保体验最平滑
+                QTimer.singleShot(500, lambda: self.show_toast_notification(new_signals))
+        else:
+            self.alert_card.setVisible(False)
+            
+    def show_toast_notification(self, signals):
+        """展示磨砂玻璃质感的右下角淡入淡出动画弹窗"""
+        # 保证只有一个弹窗存在，防止多重弹窗重叠
+        if hasattr(self, 'active_toast') and self.active_toast:
+            try:
+                self.active_toast.close()
+            except:
+                pass
+        self.active_toast = StrategyNotificationToast(signals, self, self)
+        self.active_toast.show_elegant()
+        
+    def highlight_first_signal(self):
+        """顶部预警卡片点击详情一键跳转"""
+        if not hasattr(self, 'active_buy_signals') or not self.active_buy_signals:
+            return
+            
+        first_code = list(self.active_buy_signals.keys())[0]
+        # 切换到“我的自选基金” Tab
+        self.tabs.setCurrentIndex(1)
+        
+        # 寻找并定位对应的基金
+        row = self.model1.find_row_by_code(first_code)
+        if row != -1:
+            idx = self.model1.index(row, 0)
+            self.table1.scrollTo(idx)
+            self.table1.selectRow(row)
+            # 自动弹出该基金的历史详情大图
+            self.show_detailed_chart(self.table1, idx)
 
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication

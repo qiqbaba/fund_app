@@ -195,6 +195,28 @@ class FundTableDelegate(QStyledItemDelegate):
     def __init__(self, table_type="my_fund", parent=None):
         super().__init__(parent)
         self.table_type = table_type  # my_fund, ranking, valuation
+        
+    def _is_buy_triggered(self, model, row):
+        """检查指定行是否触发了买入抄底信号"""
+        if row < 0 or row >= model.rowCount():
+            return False
+            
+        row_data = model.get_row_data(row)
+        code = row_data.get("基金代码")
+        if not code:
+            return False
+            
+        main_win = None
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, 'active_buy_signals'):
+                main_win = curr
+                break
+            curr = curr.parent()
+            
+        if main_win and code in main_win.active_buy_signals:
+            return True
+        return False
     
     def paint(self, painter, option, index):
         """自定义绘制，支持换行"""
@@ -220,10 +242,18 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 1. 确定并绘制基础背景色 (包含红绿百分位、置顶色等)
         bg_color = self._get_background_color(data, header)
+        
+        # 检查是否触发了买入抄底信号
+        is_buy_triggered = self._is_buy_triggered(model, index.row())
+        row_data = model.get_row_data(index.row())
+            
         if not bg_color:
-            is_pinned = index.model().get_row_data(index.row()).get("_is_pinned", False)
-            if is_pinned and header != "操作":
-                bg_color = QColor("#f0f7ff") 
+            if is_buy_triggered and header == "最优参数":
+                bg_color = QColor(46, 213, 115, 45)  # 优雅的绿发光透明色
+            else:
+                is_pinned = row_data.get("_is_pinned", False)
+                if is_pinned and header != "操作":
+                    bg_color = QColor("#f0f7ff") 
         
         if bg_color:
             painter.fillRect(option.rect, bg_color)
@@ -271,12 +301,20 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 对"基金名称"、"基金板块"和"最优参数"列启用换行
         if header in ["基金名称", "基金板块", "最优参数"]:
-            # 使用QTextDocument处理换行和对齐
+            # 使用QTextDocument处理换行 and 对齐
             doc = QTextDocument()
             doc.setTextWidth(option.rect.width() - 4)
             # 将颜色转换为 hex 格式
             color_name = text_color.name()
-            doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
+            
+            if is_buy_triggered and header == "最优参数":
+                data_clean = str(data).replace(" ", "&nbsp;")
+                doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; line-height: 1.1;'>"
+                            f"<div style='color: #2ecc71; font-weight: bold; font-size: 10px;'>🎯 抄底信号!</div>"
+                            f"<div style='font-size: 9.5px; font-weight: normal; color: #27ae60; white-space: nowrap;'>{data_clean}</div>"
+                            f"</div>")
+            else:
+                doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
             
             painter.save()
             painter.translate(option.rect.x() + 2, option.rect.y() + 2)
@@ -356,7 +394,7 @@ class FundTableDelegate(QStyledItemDelegate):
                 doc = QTextDocument()
                 # 根据列类型设置合适的文本宽度
                 width_map = {
-                    "基金名称": 176, 
+                    "基金名称": 161, 
                     "基金板块": 96, 
                     "最优参数": 116, 
                     "持有金额/\n收益率": 81,
@@ -364,7 +402,18 @@ class FundTableDelegate(QStyledItemDelegate):
                 }
                 text_width = width_map.get(header, 100)
                 doc.setTextWidth(text_width)
-                doc.setHtml(f"<div>{str(data)}</div>")
+                
+                is_buy_triggered = self._is_buy_triggered(model, index.row())
+                if is_buy_triggered and header == "最优参数":
+                    data_clean = str(data).replace(" ", "&nbsp;")
+                    doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; line-height: 1.1;'>"
+                                f"<div style='color: #2ecc71; font-weight: bold; font-size: 10px;'>🎯 抄底信号!</div>"
+                                f"<div style='font-size: 9.5px; font-weight: normal; color: #27ae60; white-space: nowrap;'>{data_clean}</div>"
+                                f"</div>")
+                else:
+                    color_name = self._get_text_color(data, header).name()
+                    doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
+                    
                 doc.adjustSize()
                 
                 # 返回自适应高度，加上padding
