@@ -1,5 +1,5 @@
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF, QSortFilterProxyModel
-from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, QPointF, QSortFilterProxyModel, QRectF
+from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF, QLinearGradient
 from PySide6.QtWidgets import (QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, 
                                QLineEdit, QPushButton, QHBoxLayout, QStyle)
 
@@ -155,7 +155,7 @@ class FundTableModel(QAbstractTableModel):
     def find_row_by_code(self, code):
         """查找指定代码的行号（返回第一个匹配的行号）"""
         for i, row_data in enumerate(self.data_rows):
-            if row_data.get("基金代码") == code:
+            if row_data.get("基金代码") == code or row_data.get("关联基金代码") == code:
                 return i
         return -1
     
@@ -163,7 +163,7 @@ class FundTableModel(QAbstractTableModel):
         """查找指定代码的所有行号"""
         rows = []
         for i, row_data in enumerate(self.data_rows):
-            if row_data.get("基金代码") == code:
+            if row_data.get("基金代码") == code or row_data.get("关联基金代码") == code:
                 rows.append(i)
         return rows
 
@@ -243,7 +243,8 @@ class FundFilterProxyModel(QSortFilterProxyModel):
         """在当前过滤后的视图中查找基金代码对应的代理行号"""
         for i in range(self.rowCount()):
             source_index = self.mapToSource(self.index(i, 0))
-            if self.sourceModel().get_row_data(source_index.row()).get("基金代码") == code:
+            row_data = self.sourceModel().get_row_data(source_index.row())
+            if row_data.get("基金代码") == code or row_data.get("关联基金代码") == code:
                 return i
         return -1
 
@@ -364,8 +365,8 @@ class FundTableDelegate(QStyledItemDelegate):
         text_color = self._get_text_color(data, header)
         painter.setPen(text_color)
         
-        # 对"基金名称"、"基金板块"和"最优参数"列启用换行
-        if header in ["基金名称", "基金板块", "最优参数"]:
+        # 对"基金名称"、"基金板块"、"最优参数"、"投资参考建议"列启用换行
+        if header in ["基金名称", "基金板块", "最优参数", "投资参考建议"]:
             # 使用QTextDocument处理换行 and 对齐
             doc = QTextDocument()
             doc.setTextWidth(option.rect.width() - 4)
@@ -378,12 +379,78 @@ class FundTableDelegate(QStyledItemDelegate):
                             f"<div style='color: #2ecc71; font-weight: bold; font-size: 10px;'>🎯 抄底信号!</div>"
                             f"<div style='font-size: 9.5px; font-weight: normal; color: #27ae60; white-space: nowrap;'>{data_clean}</div>"
                             f"</div>")
+            elif header == "投资参考建议":
+                doc.setHtml(f"<div style='text-align: left; margin: 0; padding: 2px; color: {color_name}; font-size: 11px; font-family: \"Microsoft YaHei\";'>{str(data)}</div>")
             else:
                 doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
             
             painter.save()
             painter.translate(option.rect.x() + 2, option.rect.y() + 2)
             doc.drawContents(painter, QRect(0, 0, option.rect.width() - 4, option.rect.height() - 4))
+            painter.restore()
+        elif self.table_type == "cycle" and header == "周期当前位置":
+            # 绘制周期当前位置彩虹渐变进度条
+            try:
+                parts = str(data).split('|')
+                pct_val = float(parts[0].replace('%', '').strip())
+                stage_str = parts[1] if len(parts) > 1 else "未知"
+            except Exception:
+                pct_val = 50.0
+                stage_str = "未知"
+                
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # 计算绘图区域
+            margin_h = 10
+            margin_v = 4
+            draw_rect = option.rect.adjusted(margin_h, margin_v, -margin_h, -margin_v)
+            
+            # 绘制背景彩虹渐变条
+            gradient = QLinearGradient(draw_rect.topLeft(), draw_rect.topRight())
+            gradient.setColorAt(0.0, QColor("#3498db"))  # 深蓝 - 极低筑底
+            gradient.setColorAt(0.2, QColor("#2ecc71"))  # 绿色 - 低估复苏
+            gradient.setColorAt(0.5, QColor("#f1c40f"))  # 黄色 - 适中繁荣
+            gradient.setColorAt(0.8, QColor("#e67e22"))  # 橙色 - 繁荣后期
+            gradient.setColorAt(1.0, QColor("#e74c3c"))  # 红色 - 高位见顶
+            
+            # 将彩虹条高度调整为5像素，整体靠上放置，以留出充足空间绘字
+            bar_height = 5
+            bar_y = draw_rect.top() + 4
+            bar_rect = QRectF(draw_rect.left(), bar_y, draw_rect.width(), bar_height)
+            
+            painter.setBrush(gradient)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bar_rect, 2.5, 2.5)
+            
+            # 计算滑块位置
+            pct_val = max(0.0, min(100.0, pct_val))
+            slider_x = bar_rect.left() + (pct_val / 100.0) * bar_rect.width()
+            
+            # 绘制滑块阴影 (半透明黑)
+            shadow_pen = QPen(QColor(0, 0, 0, 40), 1.2)
+            painter.setPen(shadow_pen)
+            painter.setBrush(QColor(0, 0, 0, 20))
+            painter.drawEllipse(QPointF(slider_x, bar_rect.center().y()), 4.5, 4.5)
+            
+            # 绘制滑块主体 (白色，深色框)
+            slider_pen = QPen(QColor("#2c3e50"), 1.5)
+            painter.setPen(slider_pen)
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(QPointF(slider_x, bar_rect.center().y()), 3.5, 3.5)
+            
+            # 绘制文字标签
+            font_label = QFont("Microsoft YaHei")
+            font_label.setPointSize(8)
+            font_label.setBold(True)
+            painter.setFont(font_label)
+            painter.setPen(QColor("#2c3e50"))
+            
+            # 计算专门的文字绘制区域，严格在 bar_rect 底部与单元格底部之间，避免超出单元格范围导致文字残留重叠
+            text_rect = QRect(option.rect.left(), int(bar_rect.bottom() + 1), option.rect.width(), int(option.rect.bottom() - bar_rect.bottom() - 1))
+            text_str = f"{pct_val:.1f}% [{stage_str}]"
+            painter.drawText(text_rect, Qt.AlignCenter, text_str)
+            
             painter.restore()
         elif header == "趋势":
             # 绘制迷你走势图 (Sparkline)
@@ -406,7 +473,7 @@ class FundTableDelegate(QStyledItemDelegate):
         """在单元格内绘制迷你趋势图"""
         # 反转数据为正序 (原始数据通常是倒序)
         data = navs[::-1]
-        if len(data) > 60: # 如果数据太多，进行采样以提高性能和显示效果
+        if len(data) > 60: # 如果数据太多，进行采样以提高性能 and 显示效果
             step = len(data) // 60
             data = data[::step]
             
@@ -453,7 +520,7 @@ class FundTableDelegate(QStyledItemDelegate):
         header = model.headers[column] if column < len(model.headers) else ""
         
         # 对需要换行的列计算自适应高度
-        if header in ["基金名称", "基金板块", "最优参数", "持有金额/\n收益率", "估值状态\n(PE/PB)"]:
+        if header in ["基金名称", "基金板块", "最优参数", "持有金额/\n收益率", "估值状态\n(PE/PB)", "周期当前位置", "投资参考建议"]:
             data = index.data(Qt.DisplayRole)
             if data:
                 doc = QTextDocument()
@@ -463,7 +530,9 @@ class FundTableDelegate(QStyledItemDelegate):
                     "基金板块": 96, 
                     "最优参数": 116, 
                     "持有金额/\n收益率": 81,
-                    "估值状态\n(PE/PB)": 81
+                    "估值状态\n(PE/PB)": 81,
+                    "周期当前位置": 150,
+                    "投资参考建议": 280
                 }
                 text_width = width_map.get(header, 100)
                 doc.setTextWidth(text_width)
@@ -475,6 +544,11 @@ class FundTableDelegate(QStyledItemDelegate):
                                 f"<div style='color: #2ecc71; font-weight: bold; font-size: 10px;'>🎯 抄底信号!</div>"
                                 f"<div style='font-size: 9.5px; font-weight: normal; color: #27ae60; white-space: nowrap;'>{data_clean}</div>"
                                 f"</div>")
+                elif header == "投资参考建议":
+                    doc.setHtml(f"<div style='text-align: left; margin: 0; padding: 2px; color: #000000; font-size: 11px; font-family: \"Microsoft YaHei\";'>{str(data)}</div>")
+                elif header == "周期当前位置":
+                    # 给彩虹温度计加文字留出适当的宽裕空间
+                    return QSize(150, 42)
                 else:
                     color_name = self._get_text_color(data, header).name()
                     doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
@@ -482,7 +556,7 @@ class FundTableDelegate(QStyledItemDelegate):
                 doc.adjustSize()
                 
                 # 返回自适应高度，加上padding
-                height = int(doc.size().height()) + 4
+                height = int(doc.size().height()) + 6
                 return QSize(text_width, max(height, 35))
         
         if header == "趋势":

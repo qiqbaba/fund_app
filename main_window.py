@@ -22,6 +22,81 @@ from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget,
                          HoldingInputWidget, ActionButtonWidget, FundFilterProxyModel)
 from utils import extract_fund_sector
 
+CYCLE_FUNDS = [
+    {
+        "code": "014414",
+        "name": "招商中证畜牧养殖ETF联接A",
+        "sector": "生猪养殖",
+        "pct_default": 15.0,
+        "stage_default": "萧条筑底期",
+        "advice": "猪价处于周期底部亏损区间，母猪产能持续去化，适合逢低分批布局，耐心等待周期拐点。"
+    },
+    {
+        "code": "008887",
+        "name": "华夏国证半导体芯片ETF联接A",
+        "sector": "半导体存储",
+        "pct_default": 35.0,
+        "stage_default": "复苏拉升期",
+        "advice": "全球存储芯片巨头减产成效显现，合约价探底回升，AI算力需求高增驱动周期上行，建议逢低积极配置。"
+    },
+    {
+        "code": "008279",
+        "name": "国泰中证煤炭ETF联接A",
+        "sector": "煤炭能源",
+        "pct_default": 55.0,
+        "stage_default": "繁荣适中期",
+        "advice": "煤炭行业高红利、高现金流属性明显，供需结构维持紧平衡，股价高位震荡，建议作为长线收息底仓持有。"
+    },
+    {
+        "code": "004432",
+        "name": "南方中证申万有色金属ETF联接A",
+        "sector": "有色金属",
+        "pct_default": 75.0,
+        "stage_default": "繁荣后期",
+        "advice": "美联储降息预期及地缘政治溢价推高黄金和铜铝价格，工业金属进入景气度后半程，注意追高风险，可逐步分批止盈。"
+    },
+    {
+        "code": "161725",
+        "name": "招商中证白酒指数A",
+        "sector": "白酒消费",
+        "pct_default": 45.0,
+        "stage_default": "繁荣适中期",
+        "advice": "白酒行业分化加剧，高端白酒韧性强但次高端面临去库存压力。目前估值已回落至中枢以下，适合定投慢慢收集筹码。"
+    },
+    {
+        "code": "004890",
+        "name": "广发中证全指建筑材料ETF联接A",
+        "sector": "基建建材",
+        "pct_default": 10.0,
+        "stage_default": "萧条筑底期",
+        "advice": "地产链持续承压导致建材需求低迷，估值和价格均处于历史极低水平。政策托底意图明显，适合作为长线左侧埋伏。"
+    },
+    {
+        "code": "012701",
+        "name": "南方中证全指证券公司ETF联接A",
+        "sector": "证券金融",
+        "pct_default": 25.0,
+        "stage_default": "复苏拉升期",
+        "advice": "券商作为牛市风向标，估值处于历史低位，行业并购重组预期升温，市场成交量回暖时弹性极强，建议震荡期逢低布局。"
+    },
+    {
+        "code": "012929",
+        "name": "广发中证光伏产业ETF联接A",
+        "sector": "新能源光伏",
+        "pct_default": 20.0,
+        "stage_default": "复苏拉升期",
+        "advice": "光伏产业链价格触底，行业面临产能出清，供给侧改革预期强烈。估值极具吸引力，可关注出清加快后的右侧机会。"
+    },
+    {
+        "code": "003017",
+        "name": "易方达中证军工指数A",
+        "sector": "国防军工",
+        "pct_default": 30.0,
+        "stage_default": "复苏拉升期",
+        "advice": "国防装备建设进入'十四五'后半程换装高峰，地缘局势不确定性加大，基本面触底回升，具备较强的抗周期与弹性属性。"
+    }
+]
+
 class FundApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -278,6 +353,29 @@ class FundApp(QMainWindow):
         self.table3.setMouseTracking(True)
         layout3.addWidget(self.table3)
         
+        # Tab 周期榜
+        self.tab_cycle = QWidget()
+        layout_cycle = QVBoxLayout(self.tab_cycle)
+        layout_cycle.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout_cycle = QHBoxLayout()
+        filter_layout_cycle.setContentsMargins(5, 5, 5, 5)
+        self.filter_input_cycle = QLineEdit()
+        self.filter_input_cycle.setPlaceholderText("🔍 在周期榜中搜索 (名称/代码/板块)...")
+        self.filter_input_cycle.setClearButtonEnabled(True)
+        self.filter_input_cycle.setFixedHeight(30)
+        self.filter_input_cycle.textChanged.connect(lambda text: self.proxy_cycle.setFilterText(text) if hasattr(self, 'proxy_cycle') and self.proxy_cycle else None)
+        filter_layout_cycle.addWidget(self.filter_input_cycle)
+        layout_cycle.addLayout(filter_layout_cycle)
+        
+        self.table_cycle = QTableView()
+        self.table_cycle.setAlternatingRowColors(True)
+        self.table_cycle.verticalHeader().setVisible(False)
+        self.table_cycle.setSelectionBehavior(QTableView.SelectRows)
+        self.table_cycle.setSelectionMode(QTableView.SingleSelection)
+        self.table_cycle.setMouseTracking(True)
+        layout_cycle.addWidget(self.table_cycle)
+
         # Tab 4: 其他(已有数据)
         self.tab_other = QWidget()
         layout_other = QVBoxLayout(self.tab_other)
@@ -319,6 +417,7 @@ class FundApp(QMainWindow):
         self.tabs.setTabToolTip(2, "已过滤同质化")
         self.tabs.addTab(self.tab3, "💎 估值榜")
         self.tabs.setTabToolTip(3, "PE/PB 最高最低")
+        self.tabs.addTab(self.tab_cycle, "📅 周期参考榜")
         self.tabs.addTab(self.tab_other, "📦 其他(已有数据)")
         self.tabs.addTab(self.tab4, "💡 策略中心")
         
@@ -329,11 +428,13 @@ class FundApp(QMainWindow):
         self.table1.clicked.connect(lambda index: self.on_table_clicked(self.table1, index))
         self.table2.clicked.connect(lambda index: self.on_table_clicked(self.table2, index))
         self.table3.clicked.connect(lambda index: self.on_table_clicked(self.table3, index))
+        self.table_cycle.clicked.connect(lambda index: self.on_table_clicked(self.table_cycle, index))
         
         self.table0.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table0, index))
         self.table1.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table1, index))
         self.table2.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table2, index))
         self.table3.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table3, index))
+        self.table_cycle.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table_cycle, index))
         self.table_other.clicked.connect(lambda index: self.on_table_clicked(self.table_other, index))
         self.table_other.doubleClicked.connect(lambda index: self.show_detailed_chart(self.table_other, index))
 
@@ -346,6 +447,8 @@ class FundApp(QMainWindow):
         self.table2.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table2, pos))
         self.table3.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table3.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table3, pos))
+        self.table_cycle.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_cycle.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table_cycle, pos))
         self.table_other.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_other.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table_other, pos))
 
@@ -356,10 +459,12 @@ class FundApp(QMainWindow):
         self.model1 = None
         self.model2 = None
         self.model3 = None
+        self.model_cycle = None
         self.delegate0 = None
         self.delegate1 = None
         self.delegate2 = None
         self.delegate3 = None
+        self.delegate_cycle = None
         self.model_other = None
         self.delegate_other = None
         
@@ -367,6 +472,7 @@ class FundApp(QMainWindow):
         self.proxy1 = None
         self.proxy2 = None
         self.proxy3 = None
+        self.proxy_cycle = None
         
         self.rebuild_table_headers()
 
@@ -375,6 +481,8 @@ class FundApp(QMainWindow):
                         "昨日净值", "净值日期", "实时估值", "今日收益/\n收益率"]
         self.val_headers = ["序号", "估值标签", "基金代码", "基金名称", "基金板块", "最优参数", "估值状态\n(PE/PB)", 
                             "昨日净值", "净值日期", "实时估值", "今日收益/\n收益率"]
+        self.cycle_headers = ["序号", "周期板块", "周期当前位置", "关联基金代码", "关联基金名称", "昨日净值", "净值日期", 
+                              "实时估值", "今日收益/\n收益率", "近12月百分位", "趋势", "投资参考建议", "操作"]
         
         self.drop_days = self.config.get("drop_days", [2, 4])
         self.pct_months = self.config.get("percentile_months", [1, 2, 3, 6, 12, 24])
@@ -398,6 +506,7 @@ class FundApp(QMainWindow):
                 "my_fund": list(old_list),
                 "ranking": list(old_list),
                 "valuation": list(old_list),
+                "cycle": [],
                 "other": list(old_list)
             }
             # 特殊处理估值榜上的老列名转换
@@ -410,18 +519,30 @@ class FundApp(QMainWindow):
             self.config["hidden_columns"] = hidden_cols_config
             self.need_config_save = True
         
+        if "cycle" not in hidden_cols_config:
+            hidden_cols_config["cycle"] = []
+            self.config["hidden_columns"] = hidden_cols_config
+            self.need_config_save = True
+        
         # 创建模型和代理
         for table, table_type in [(self.table0, "special"), (self.table1, "my_fund"), 
-                                  (self.table2, "ranking"), (self.table3, "valuation"), (self.table_other, "other")]:
-            table_headers = self.val_headers if table_type == "valuation" else self.headers
+                                  (self.table2, "ranking"), (self.table3, "valuation"), 
+                                  (self.table_cycle, "cycle"), (self.table_other, "other")]:
+            if table_type == "valuation":
+                table_headers = self.val_headers
+            elif table_type == "cycle":
+                table_headers = self.cycle_headers
+            else:
+                table_headers = self.headers
+                
             model = FundTableModel(table_headers, parent=self)
             delegate = FundTableDelegate(table_type=table_type, parent=self)
             
             # 为了避免 Qt 在 setModel 时触发旧列的错误排序，先禁用排序
             table.setSortingEnabled(False)
             
-            # 使用代理模型支持过滤
-            if table_type in ["special", "my_fund", "ranking", "valuation"]:
+            # 使用代理模型 support 过滤
+            if table_type in ["special", "my_fund", "ranking", "valuation", "cycle"]:
                 proxy = FundFilterProxyModel(self)
                 proxy.setSourceModel(model)
                 table.setModel(proxy)
@@ -444,31 +565,47 @@ class FundApp(QMainWindow):
             table.verticalHeader().setDefaultSectionSize(38)
             
             # 设置列宽
-            table.setColumnWidth(0, 35)
-            table.setColumnWidth(1, 35)
-            table.setColumnWidth(2, 65)
-            table.setColumnWidth(3, 165)  # 基金名称，支持换行
-            table.setColumnWidth(4, 100)  # 基金板块，支持换行
-            table.setColumnWidth(5, 120)  # 最优参数，支持换行
-            table.setColumnWidth(6, 85)
-            table.setColumnWidth(7, 75)
-            table.setColumnWidth(8, 80)
-            table.setColumnWidth(9, 75)
-            table.setColumnWidth(10, 85)
-            
-            # 减小数据列宽度
-            for col_idx in range(11, len(table_headers) - 3):
-                table.setColumnWidth(col_idx, 65)
-            
-            trend_col_index = len(table_headers) - 3
-            table.setColumnWidth(trend_col_index, 80)
-            
-            time_col_index = len(table_headers) - 2
-            table.setColumnWidth(time_col_index, 130)
-            
-            action_col_index = len(table_headers) - 1
-            header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
-            table.setColumnWidth(action_col_index, 60)
+            if table_type == "cycle":
+                table.setColumnWidth(0, 35)   # 序号
+                table.setColumnWidth(1, 90)   # 周期板块
+                table.setColumnWidth(2, 160)  # 周期当前位置
+                table.setColumnWidth(3, 70)   # 关联基金代码
+                table.setColumnWidth(4, 160)  # 关联基金名称
+                table.setColumnWidth(5, 75)   # 昨日净值
+                table.setColumnWidth(6, 80)   # 净值日期
+                table.setColumnWidth(7, 75)   # 实时估值
+                table.setColumnWidth(8, 85)   # 今日收益/\n收益率
+                table.setColumnWidth(9, 80)   # 近12月百分位
+                table.setColumnWidth(10, 80)  # 趋势
+                table.setColumnWidth(11, 280) # 投资参考建议
+                table.setColumnWidth(12, 60)  # 操作
+                header_view.setSectionResizeMode(12, QHeaderView.Fixed)
+            else:
+                table.setColumnWidth(0, 35)
+                table.setColumnWidth(1, 35)
+                table.setColumnWidth(2, 65)
+                table.setColumnWidth(3, 165)  # 基金名称，支持换行
+                table.setColumnWidth(4, 100)  # 基金板块，支持换行
+                table.setColumnWidth(5, 120)  # 最优参数，支持换行
+                table.setColumnWidth(6, 85)
+                table.setColumnWidth(7, 75)
+                table.setColumnWidth(8, 80)
+                table.setColumnWidth(9, 75)
+                table.setColumnWidth(10, 85)
+                
+                # 减小数据列宽度
+                for col_idx in range(11, len(table_headers) - 3):
+                    table.setColumnWidth(col_idx, 65)
+                
+                trend_col_index = len(table_headers) - 3
+                table.setColumnWidth(trend_col_index, 80)
+                
+                time_col_index = len(table_headers) - 2
+                table.setColumnWidth(time_col_index, 130)
+                
+                action_col_index = len(table_headers) - 1
+                header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
+                table.setColumnWidth(action_col_index, 60)
             
             # 隐藏指定列
             table_hidden_cols = hidden_cols_config.get(table_type, [])
@@ -492,6 +629,10 @@ class FundApp(QMainWindow):
                 self.model3 = model
                 self.delegate3 = delegate
                 self.proxy3 = proxy
+            elif table == self.table_cycle:
+                self.model_cycle = model
+                self.delegate_cycle = delegate
+                self.proxy_cycle = proxy
             else:  # table_other
                 self.model_other = model
                 self.delegate_other = delegate
@@ -802,20 +943,21 @@ class FundApp(QMainWindow):
     def on_table_clicked(self, table, index):
         """处理表格点击事件，特别是操作列"""
         column = index.column()
-        if column != len(self.headers) - 1: # 仅处理操作列
+        header = table.model().headerData(column, Qt.Horizontal, Qt.DisplayRole)
+        if header != "操作": # 仅处理操作列
             return
             
         model = table.model()
         row = index.row()
         row_data = model.get_row_data(row)
-        code = row_data.get("基金代码")
-        name = row_data.get("基金名称")
+        code = row_data.get("基金代码") or row_data.get("关联基金代码")
+        name = row_data.get("基金名称") or row_data.get("关联基金名称")
         action = row_data.get("操作")
         
         if action == "❌删除":
             self.delete_fund(code)
         elif action == "➕关注":
-            sector = row_data.get("基金板块", "")
+            sector = row_data.get("基金板块") or row_data.get("周期板块") or ""
             self.add_from_market(code, name, sector)
 
     def show_context_menu(self, table, pos):
@@ -827,8 +969,8 @@ class FundApp(QMainWindow):
         model = table.model()
         row = index.row()
         row_data = model.get_row_data(row)
-        code = row_data.get("基金代码")
-        name = row_data.get("基金名称")
+        code = row_data.get("基金代码") or row_data.get("关联基金代码")
+        name = row_data.get("基金名称") or row_data.get("关联基金名称")
         
         # 获取配置中的信息
         fund_info = self.config.get("funds_info", {}).get(code, {})
@@ -864,7 +1006,7 @@ class FundApp(QMainWindow):
             menu.addAction(delete_action)
         else:
             add_my_action = QAction("⭐ 添加到自选", self)
-            sector = row_data.get("基金板块", "")
+            sector = row_data.get("基金板块") or row_data.get("周期板块") or ""
             add_my_action.triggered.connect(lambda: self.add_from_market(code, name, sector))
             menu.addAction(add_my_action)
             
@@ -992,6 +1134,13 @@ class FundApp(QMainWindow):
                     row_data["操作"] = status_text
                     model.update_row(r, row_data)
 
+        if hasattr(self, 'model_cycle') and self.model_cycle:
+            cycle_rows = self.get_all_rows_by_assoc_code(self.table_cycle, code)
+            for r in cycle_rows:
+                row_data = self.model_cycle.get_row_data(r)
+                row_data["操作"] = status_text
+                self.model_cycle.update_row(r, row_data)
+
     def add_single_fund_to_model(self, code, name, sector, to_special=False):
         """向模型添加单个基金行"""
         model = self.model0 if to_special else self.model1
@@ -1084,6 +1233,9 @@ class FundApp(QMainWindow):
             fund_info = self.config["funds_info"][code]
             self.add_single_fund_to_model(code, fund_info.get("name"), fund_info.get("sector"), to_special=True)
 
+    def get_cycle_codes(self):
+        return ["014414", "008887", "008279", "004432", "161725", "004890", "012701", "012929", "003017"]
+
     def start_individual_fetcher(self, codes):
         """为特定的一组代码启动抓取线程，不影响排行榜/估值榜列表"""
         if not codes: return
@@ -1100,7 +1252,8 @@ class FundApp(QMainWindow):
         if hasattr(self, 'model_other') and self.model_other:
             other_codes = [self.model_other.data_rows[i].get("基金代码") for i in range(len(self.model_other.data_rows))]
         
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
+        cycle_codes = self.get_cycle_codes()
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes + cycle_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -1126,6 +1279,8 @@ class FundApp(QMainWindow):
         # 清空现有数据
         self.model0.clear_all()
         self.model1.clear_all()
+        if hasattr(self, 'model_cycle') and self.model_cycle:
+            self.model_cycle.clear_all()
         
         # 添加新的行
         for code in funds:
@@ -1163,6 +1318,29 @@ class FundApp(QMainWindow):
                 special_row["序号"] = str(len(self.model0.data_rows) + 1)
                 self.model0.add_row(special_row)
         
+        # 灌入周期参考榜静态配置的基础数据行
+        if hasattr(self, 'model_cycle') and self.model_cycle:
+            for i, cf in enumerate(CYCLE_FUNDS):
+                row_data = {h: "-" for h in self.cycle_headers}
+                row_data["序号"] = str(i + 1)
+                row_data["周期板块"] = cf["sector"]
+                row_data["周期当前位置"] = f"{cf['pct_default']}%|{cf['stage_default']}"
+                row_data["关联基金代码"] = cf["code"]
+                row_data["关联基金名称"] = cf["name"]
+                
+                # 获取策略
+                opt = self.db.get_optimal_strategy(cf["code"])
+                if opt:
+                    row_data["_opt_time"] = opt.get('update_time')
+                else:
+                    row_data["_opt_time"] = None
+                
+                row_data["近12月百分位"] = "-"
+                row_data["投资参考建议"] = cf["advice"]
+                row_data["操作"] = "已添加" if cf["code"] in self.config.get("funds_info", {}) else "➕关注"
+                
+                self.model_cycle.add_row(row_data)
+        
         # 加载完成后，如果表格开启了排序，需要手动触发一次排序以应用置顶逻辑
         if self.table0.horizontalHeader().sortIndicatorSection() != -1:
             self.model0.sort(self.table0.horizontalHeader().sortIndicatorSection(), 
@@ -1170,6 +1348,9 @@ class FundApp(QMainWindow):
         if self.table1.horizontalHeader().sortIndicatorSection() != -1:
             self.model1.sort(self.table1.horizontalHeader().sortIndicatorSection(), 
                              self.table1.horizontalHeader().sortIndicatorOrder())
+        if hasattr(self, 'table_cycle') and self.table_cycle.horizontalHeader().sortIndicatorSection() != -1:
+            self.model_cycle.sort(self.table_cycle.horizontalHeader().sortIndicatorSection(), 
+                                  self.table_cycle.horizontalHeader().sortIndicatorOrder())
         
         # 启动排行数据获取
         self.ranking_fetcher = RankingFetcher(self.all_funds_code_to_name, self.shared_sector_map) 
@@ -1315,7 +1496,8 @@ class FundApp(QMainWindow):
         
         other_codes = self.update_other_funds_table()
         
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
+        cycle_codes = self.get_cycle_codes()
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes + cycle_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -1384,7 +1566,8 @@ class FundApp(QMainWindow):
         
         other_codes = self.update_other_funds_table()
         
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes))
+        cycle_codes = self.get_cycle_codes()
+        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes + cycle_codes))
         
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
@@ -1426,6 +1609,10 @@ class FundApp(QMainWindow):
             
         for row3 in self.get_all_rows_by_code(self.table3, code):
             self.populate_row_data(self.model3, row3, data, is_my_fund=False)
+            
+        if hasattr(self, 'table_cycle') and self.table_cycle:
+            for row_cycle in self.get_all_rows_by_assoc_code(self.table_cycle, code):
+                self.populate_cycle_row_data(self.model_cycle, row_cycle, data)
             
         if hasattr(self, 'table_other') and self.table_other:
             for row4 in self.get_all_rows_by_code(self.table_other, code):
@@ -1533,14 +1720,88 @@ class FundApp(QMainWindow):
         
         model.update_row(row, row_data)
 
+    def get_all_rows_by_assoc_code(self, table, code):
+        """返回周期表格中所有匹配关联基金代码的源模型行号列表"""
+        model = table.model()
+        if not model: return []
+        source_model = model.sourceModel() if hasattr(model, 'sourceModel') else model
+        rows = []
+        for i, row_data in enumerate(source_model.data_rows):
+            if row_data.get("关联基金代码") == code:
+                rows.append(i)
+        return rows
+
+    def populate_cycle_row_data(self, model, row, data):
+        """更新周期表格行数据"""
+        if row < 0 or row >= len(model.data_rows):
+            return
+        
+        row_data = model.get_row_data(row)
+        code = data.get('fundcode')
+        
+        new_name = data.get('name')
+        if new_name:
+            if new_name == code and row_data.get("关联基金名称") and row_data["关联基金名称"] != "加载中..." and not row_data["关联基金名称"].isdigit():
+                pass
+            else:
+                row_data["关联基金名称"] = new_name
+                
+        row_data["昨日净值"] = data.get('dwjz')
+        row_data["净值日期"] = data.get('jzrq')
+        row_data["实时估值"] = data.get('gsz')
+        
+        change_str = data.get('gszzl', "")
+        try:
+            val = float(change_str)
+            row_data["今日收益/\n收益率"] = f"-\n{val:+.2f}%"
+        except:
+            row_data["今日收益/\n收益率"] = f"-\n{change_str}%"
+            
+        pcts_dict = data.get('pcts', {})
+        val_12m = pcts_dict.get(12)
+        
+        pct_val = None
+        if val_12m is not None:
+            row_data["近12月百分位"] = f"{val_12m:.2f}%"
+            pct_val = val_12m
+        else:
+            row_data["近12月百分位"] = "-"
+            try:
+                parts = row_data.get("周期当前位置", "").split('|')
+                pct_val = float(parts[0].replace('%', '').strip())
+            except:
+                pct_val = 50.0
+
+        if val_12m is not None:
+            if pct_val <= 20.0:
+                stage_str = "萧条筑底期"
+            elif pct_val <= 40.0:
+                stage_str = "复苏拉升期"
+            elif pct_val <= 60.0:
+                stage_str = "繁荣适中期"
+            elif pct_val <= 80.0:
+                stage_str = "繁荣后期"
+            else:
+                stage_str = "高位见顶期"
+            row_data["周期当前位置"] = f"{pct_val:.2f}%|{stage_str}"
+            
+        row_data["操作"] = "已添加" if code in self.config.get("funds_info", {}) else "➕关注"
+        
+        history_data = self.history_cache.get(code, {})
+        row_data["_history"] = history_data
+        row_data["_navs"] = history_data.get('navs', [])
+        row_data["趋势"] = ""
+        
+        model.update_row(row, row_data)
+
     def show_detailed_chart(self, table, index):
         """双击行显示详细走势图"""
         model = table.model()
         row = index.row()
         row_data = model.get_row_data(row)
         
-        code = row_data.get("基金代码")
-        name = row_data.get("基金名称", "未知")
+        code = row_data.get("基金代码") or row_data.get("关联基金代码")
+        name = row_data.get("基金名称") or row_data.get("关联基金名称") or "未知"
         history = row_data.get("_history", {})
         if not history or not history.get("navs"):
             # 如果内存没有，尝试从数据库获取
