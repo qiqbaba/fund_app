@@ -350,4 +350,16 @@ class BacktestDialog(QDialog):
         self.opt_strat = result
         self.load_optimal_params_if_exists()
         QMessageBox.information(self, "寻优完成", f"已成功为 {self.name} 找到最优策略参数！")
+        
+        # 通知主界面刷新该基金的最优参数
+        main_win = None
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, 'update_optimal_params'):
+                main_win = curr
+                break
+            curr = curr.parent()
+        if main_win:
+            main_win.update_optimal_params([self.code])
+            
         self.run_backtest()

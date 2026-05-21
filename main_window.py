@@ -1741,6 +1741,44 @@ class FundApp(QMainWindow):
             # 自动弹出该基金的历史详情大图
             self.show_detailed_chart(self.table1, idx)
 
+    def update_optimal_params(self, code_list=None):
+        """重新从数据库中加载最优策略参数，并更新所有表格中对应基金的最优参数列显示"""
+        all_opts = self.db.get_all_optimal_strategies()
+        
+        # 确定需要更新的基金代码集合
+        if code_list is not None:
+            codes_to_update = set(code_list)
+        else:
+            codes_to_update = set(all_opts.keys())
+            
+        models = [self.model0, self.model1, self.model2, self.model3, self.model_other]
+        for model in models:
+            if not model:
+                continue
+            
+            for row_idx in range(model.rowCount()):
+                row_data = model.get_row_data(row_idx)
+                code = row_data.get("基金代码")
+                if not code or code not in codes_to_update:
+                    continue
+                
+                opt = all_opts.get(code)
+                new_row_data = row_data.copy()
+                if opt:
+                    new_row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
+                    new_row_data["_opt_time"] = opt.get('update_time')
+                else:
+                    new_row_data["最优参数"] = "-"
+                    new_row_data["_opt_time"] = None
+                
+                model.update_row(row_idx, new_row_data)
+                
+        # 顺便更新'其他'Tab的基金列表，以呈现新产生最优参数的基金
+        self.update_other_funds_table()
+        
+        # 重新检测抄底信号，使最新最优参数能立刻生效，并刷新高亮/报警横幅
+        self.check_buy_signals()
+
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
     app = QApplication([])

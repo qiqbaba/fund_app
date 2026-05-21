@@ -443,4 +443,16 @@ class BatchBacktestWidget(QWidget):
         total = result.get("total_funds", 0)
         
         QMessageBox.information(self, "批量寻优完成", f"批量寻优完成！\n成功为 {success_count} 只基金找到并保存最优参数，共检查 {total} 只。")
+        
+        # 通知主界面重新从数据库加载并刷新所有最优参数
+        main_win = None
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, 'update_optimal_params'):
+                main_win = curr
+                break
+            curr = curr.parent()
+        if main_win:
+            main_win.update_optimal_params()
+            
         self.run_batch_backtest()
