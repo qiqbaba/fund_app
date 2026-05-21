@@ -527,7 +527,7 @@ class FundTableDelegate(QStyledItemDelegate):
                 # 根据列类型设置合适的文本宽度
                 width_map = {
                     "基金名称": 161, 
-                    "基金板块": 96, 
+                    "基金板块": 81, 
                     "最优参数": 116, 
                     "持有金额/\n收益率": 81,
                     "估值状态\n(PE/PB)": 81,
