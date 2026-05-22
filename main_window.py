@@ -1766,22 +1766,27 @@ class FundApp(QMainWindow):
 
     def show_detailed_chart(self, table, index):
         """双击行显示详细走势图"""
-        model = table.model()
-        row = index.row()
-        row_data = model.get_row_data(row)
-        
-        code = row_data.get("基金代码") or row_data.get("关联基金代码")
-        name = row_data.get("基金名称") or row_data.get("关联基金名称") or "未知"
-        history = row_data.get("_history", {})
-        if not history or not history.get("navs"):
-            # 如果内存没有，尝试从数据库获取
-            history = self.db.get_history(code) or {}
+        import traceback
+        try:
+            model = table.model()
+            row = index.row()
+            row_data = model.get_row_data(row)
             
-        if history and history.get("navs"):
-            dialog = FundChartDialog(code, name, history, self)
-            dialog.exec()
-        else:
-            QMessageBox.information(self, "提示", f"基金 {name} ({code}) 暂无历史走势数据，请等待刷新或手动刷新。")
+            code = row_data.get("基金代码") or row_data.get("关联基金代码")
+            name = row_data.get("基金名称") or row_data.get("关联基金名称") or "未知"
+            history = row_data.get("_history", {})
+            if not history or not history.get("navs"):
+                # 如果内存没有，尝试从数据库获取
+                history = self.db.get_history(code) or {}
+                
+            if history and history.get("navs"):
+                dialog = FundChartDialog(code, name, history, self)
+                dialog.exec()
+            else:
+                QMessageBox.information(self, "提示", f"基金 {name} ({code}) 暂无历史走势数据，请等待刷新或手动刷新。")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "走势图载入错误", f"发生未捕获异常:\n{e}\n\n堆栈信息:\n{tb}")
 
     def dispatch_table_error(self, code, error_msg):
         row1 = self.get_row_by_code(self.table1, code)
@@ -2012,8 +2017,11 @@ class FundApp(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     from PySide6.QtWidgets import QApplication
     app = QApplication([])
     window = FundApp()
     window.show()
     app.exec()
+
