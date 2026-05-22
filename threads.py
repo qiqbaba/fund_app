@@ -20,31 +20,41 @@ class RankingFetcher(QThread):
         if not self.code_to_name_dict:
             try:
                 res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=5)
+                if self.isInterruptionRequested(): return
                 match = re.search(r'var r = (\[.*\]);', res.text)
                 if match:
                     for item in json.loads(match.group(1)):
+                        if self.isInterruptionRequested(): return
                         self.code_to_name_dict[item[0]] = item[2]
             except: pass
+
+        if self.isInterruptionRequested(): return
 
         headers = {"Referer": "http://fund.eastmoney.com/"}
         # 增加重试逻辑
         for attempt in range(3):
+            if self.isInterruptionRequested(): return
             try:
                 url_top = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=desc&canbuy=0&pageIndex=1&pageSize=200"
                 r_top = requests.get(url_top, headers=headers, timeout=5)
+                if self.isInterruptionRequested(): return
                 top_data = r_top.json()
                 
                 url_bot = "http://api.fund.eastmoney.com/FundGuZhi/GetFundGZList?type=5&sort=3&orderType=asc&canbuy=0&pageIndex=1&pageSize=200"
                 r_bot = requests.get(url_bot, headers=headers, timeout=5)
+                if self.isInterruptionRequested(): return
                 bot_data = r_bot.json()
                 
                 if top_data.get("Data") and bot_data.get("Data"):
                     top_raw_list = top_data["Data"].get("list", [])
                     bot_raw_list = bot_data["Data"].get("list", [])
                     
+                    if self.isInterruptionRequested(): return
                     top_list = self.filter_distinct_sectors(top_raw_list, 10)
+                    if self.isInterruptionRequested(): return
                     bot_list = self.filter_distinct_sectors(bot_raw_list, 10)
                     
+                    if self.isInterruptionRequested(): return
                     self.ranking_signal.emit(top_list, bot_list, True)
                     return # 成功获取，退出
                 elif "网络繁忙" in str(top_data) or "网络繁忙" in str(bot_data):
@@ -55,7 +65,8 @@ class RankingFetcher(QThread):
                 continue
         
         # 多次重试失败
-        self.ranking_signal.emit([], [], False)
+        if not self.isInterruptionRequested():
+            self.ranking_signal.emit([], [], False)
 
     def filter_distinct_sectors(self, fund_list, limit=10):
         from utils import extract_fund_sector
@@ -133,6 +144,10 @@ class FundDataFetcher(QThread):
                 self.history_cache[code] = db_history
                 history_data = db_history
 
+        # 计算是否需要从 API 更新历史数据，以及更新的拉取条数 (pageSize)
+        need_api_update = True
+        page_size_to_fetch = 2000
+
         if history_data:
             data['new_history'] = history_data
             # 【修复核心】：从缓存/数据库读取数据时，必须像请求接口一样，补齐基础字段兜底！
@@ -143,13 +158,38 @@ class FundDataFetcher(QThread):
                 data['gsz'] = latest_nav  # 没有实时估值时（如QDII），用最新实际净值代替
                 data['gztime'] = f"{data['jzrq']} (实际净值)"
             
-            # 如果本地数据已经包含日期，则认为历史数据完整，不再重复抓取
+            # 如果本地数据已经包含日期，则认为已有可用历史数据 (即使 API 失败也可以用作兜底)
             if history_data.get('dates') and len(history_data['dates']) > 0:
                 history_success = True
-        
-        # ================= 2. 如果本地没有历史数据或数据不全（无日期），则从接口获取 =================
-        if not history_success:
-            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize=2000&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+                
+                # 判断是否需要从 API 增量/全量更新
+                d_max_str = history_data.get('jzrq')
+                if d_max_str:
+                    try:
+                        from datetime import datetime
+                        d_max = datetime.strptime(d_max_str, "%Y-%m-%d").date()
+                        today = datetime.now().date()
+                        days_diff = (today - d_max).days
+                        
+                        if days_diff == 0:
+                            # 最新日期就是今天，无需再次从 API 更新
+                            need_api_update = False
+                        elif 0 < days_diff <= 5:
+                            # 相差在5天以内，只拉取最新一页以节省流量
+                            page_size_to_fetch = 30
+                        else:
+                            # 相差超过 5 天，拉取全部历史数据
+                            page_size_to_fetch = 2000
+                    except Exception:
+                        page_size_to_fetch = 2000
+                else:
+                    page_size_to_fetch = 2000
+        else:
+            page_size_to_fetch = 2000
+
+        # ================= 2. 如果本地没有历史数据，或者需要更新（与今天日期不一致），则从接口获取 =================
+        if not history_success or need_api_update:
+            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize={page_size_to_fetch}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
             try:
                 r_his = session.get(his_url, timeout=5)
                 his_data = r_his.json()
@@ -169,16 +209,37 @@ class FundDataFetcher(QThread):
                         latest_item = his_data.get("Datas")[0]
                         latest_date = latest_item.get("FSRQ", "")
                         
-                        history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+                        # 如果是增量更新并且本地已有历史数据，进行拼接和去重
+                        if page_size_to_fetch < 2000 and history_data:
+                            old_dates = history_data.get('dates') or []
+                            old_navs = history_data.get('navs') or []
+                            
+                            # 合并并以日期为键去重
+                            combined = {}
+                            for d, n in zip(old_dates, old_navs):
+                                combined[d] = n
+                            for d, n in zip(dates, navs):
+                                combined[d] = n
+                            
+                            # 重新按日期降序排列
+                            sorted_items = sorted(combined.items(), key=lambda x: x[0], reverse=True)
+                            merged_dates = [item[0] for item in sorted_items]
+                            merged_navs = [item[1] for item in sorted_items]
+                            
+                            history_data = {'jzrq': latest_date, 'navs': merged_navs, 'dates': merged_dates}
+                        else:
+                            # 首次抓取或全量更新
+                            history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+                        
                         data['new_history'] = history_data
                         self.history_cache[code] = history_data
                         
-                        # 保存到数据库
-                        self.db.save_history(code, latest_date, navs, dates)
+                        # 保存合并/全量后的数据到本地数据库
+                        self.db.save_history(code, latest_date, history_data['navs'], history_data['dates'])
                         
                         data['jzrq'] = latest_date
-                        data['dwjz'] = latest_item.get("DWJZ", "")
-                        data['gsz'] = latest_item.get("DWJZ", "")
+                        data['dwjz'] = str(history_data['navs'][0])
+                        data['gsz'] = str(history_data['navs'][0])
                         data['gszzl'] = latest_item.get("JZZZL", "")
                         data['gztime'] = f"{latest_date} (实际净值)"
                         history_success = True
@@ -376,8 +437,10 @@ class ValuationFetcher(QThread):
         }
         # 增加重试逻辑
         for attempt in range(3):
+            if self.isInterruptionRequested(): return
             try:
                 res = requests.get(url, headers=headers, timeout=10)
+                if self.isInterruptionRequested(): return
                 data = res.json()
                 if data.get("Success") and data.get("Datas"):
                     all_indices = data["Datas"]
@@ -385,6 +448,7 @@ class ValuationFetcher(QThread):
                     # 更新全局板块映射库（从官方指数名称提取）
                     from utils import extract_fund_sector
                     for item in all_indices:
+                        if self.isInterruptionRequested(): return
                         idx_name = item.get("INDEXNAME", "")
                         idx_code = item.get("INDEXCODE", "")
                         if idx_name:
@@ -395,6 +459,7 @@ class ValuationFetcher(QThread):
                     valid_indices = []
                     seen_index_codes = set()
                     for item in all_indices:
+                        if self.isInterruptionRequested(): return
                         try:
                             idx_code = item.get("INDEXCODE")
                             if not idx_code or idx_code in seen_index_codes:
@@ -430,6 +495,8 @@ class ValuationFetcher(QThread):
                                 valid_indices.append(item)
                         except: continue
 
+                    if self.isInterruptionRequested(): return
+
                     # --- 核心逻辑：每类选出 10 个（去重并按板块分布，保证约 40 个） ---
                     
                     # 1. PE 榜单
@@ -448,6 +515,8 @@ class ValuationFetcher(QThread):
                         high_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"], reverse=True)
                         low_pb = sorted(pb_abs_list, key=lambda x: x["pb_float"])
 
+                    if self.isInterruptionRequested(): return
+
                     combined_dict = {} # 最终合并后的字典
                     used_fund_codes = set()  # 全局去重：已被占用的基金代码
 
@@ -457,6 +526,7 @@ class ValuationFetcher(QThread):
                         seen_sectors = set()
                         
                         for item in source:
+                            if self.isInterruptionRequested(): return
                             if count >= limit: break
                             
                             index_code = item["INDEXCODE"]
@@ -516,10 +586,14 @@ class ValuationFetcher(QThread):
 
                     # 按顺序加入
                     add_to_list(high_pe, "PE高", 10)
+                    if self.isInterruptionRequested(): return
                     add_to_list(low_pe, "PE低", 10)
+                    if self.isInterruptionRequested(): return
                     add_to_list(high_pb, "PB高", 10)
+                    if self.isInterruptionRequested(): return
                     add_to_list(low_pb, "PB低", 10)
 
+                    if self.isInterruptionRequested(): return
                     self.valuation_signal.emit(list(combined_dict.values()), True)
                     return # 成功获取，退出
                 elif data.get("ErrMsg") == "网络繁忙，请稍后重试！" or not data.get("Success"):
@@ -532,7 +606,8 @@ class ValuationFetcher(QThread):
                 continue
         
         # 多次重试失败
-        self.valuation_signal.emit([], False)
+        if not self.isInterruptionRequested():
+            self.valuation_signal.emit([], False)
 
 
 class OptimalStrategyFinder(QThread):

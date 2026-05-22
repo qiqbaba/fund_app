@@ -6,21 +6,6 @@ import time
 import requests
 import threading
 
-# 修复 Python 3.13 解释器退出时，由于垃圾回收顺序问题导致 threading.py 抛出的
-# "TypeError: 'NoneType' object does not support the context manager protocol" 异常。
-try:
-    if hasattr(threading, '_DeleteDummyThreadOnDel'):
-        _orig_del = threading._DeleteDummyThreadOnDel.__del__
-        def _safe_del(self):
-            try:
-                _orig_del(self)
-            except (TypeError, AttributeError, NameError):
-                pass
-        threading._DeleteDummyThreadOnDel.__del__ = _safe_del
-except Exception:
-    pass
-
-
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLineEdit, QPushButton, QTableView, QHeaderView, 
                                QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
@@ -1974,6 +1959,57 @@ class FundApp(QMainWindow):
         
         # 重新检测抄底信号，使最新最优参数能立刻生效，并刷新高亮/报警横幅
         self.check_buy_signals()
+
+    def closeEvent(self, event):
+        """
+        接管主窗口关闭事件，优雅停止所有活跃后台线程，确保数据写入完整且零报错退出。
+        """
+        # 1. 停止刷新定时器
+        if hasattr(self, 'refresh_timer') and self.refresh_timer.isActive():
+            self.refresh_timer.stop()
+
+        # 2. 收集所有可能的活跃后台线程
+        active_threads = []
+        
+        # 2.1 主窗口直接管理的数据抓取线程
+        if hasattr(self, 'fetcher') and self.fetcher and self.fetcher.isRunning():
+            active_threads.append(("自选/关注数据抓取线程", self.fetcher))
+            
+        if hasattr(self, 'ranking_fetcher') and self.ranking_fetcher and self.ranking_fetcher.isRunning():
+            active_threads.append(("涨跌榜抓取线程", self.ranking_fetcher))
+            
+        if hasattr(self, 'valuation_fetcher') and self.valuation_fetcher and self.valuation_fetcher.isRunning():
+            active_threads.append(("估值榜抓取线程", self.valuation_fetcher))
+
+        # 2.2 策略中心批量寻优线程
+        if hasattr(self, 'backtest_widget') and self.backtest_widget:
+            if hasattr(self.backtest_widget, 'batch_finder') and self.backtest_widget.batch_finder and self.backtest_widget.batch_finder.isRunning():
+                active_threads.append(("批量最优策略寻优线程", self.backtest_widget.batch_finder))
+
+        if active_threads:
+            print(f"[退出清理] 正在尝试优雅停止 {len(active_threads)} 个活跃后台线程...")
+            # 第一步：向所有活跃线程发送中断请求
+            for name, thread in active_threads:
+                print(f"[退出清理] 正在请求中断线程: {name}")
+                thread.requestInterruption()
+            
+            # 第二步：等待所有线程安全中止 (最多等待3秒)
+            start_time = time.time()
+            timeout = 3.0  # 3秒超时
+            
+            for name, thread in active_threads:
+                elapsed = time.time() - start_time
+                remaining = max(0.1, timeout - elapsed)
+                print(f"[退出清理] 正在等待线程 {name} 结束，剩余等待时间: {remaining:.2f}秒...")
+                # QThread.wait(msecs) 接受毫秒数，传入剩余时间的毫秒数
+                success = thread.wait(int(remaining * 1000))
+                if success:
+                    print(f"[退出清理] 线程 {name} 已安全退出。")
+                else:
+                    print(f"[退出清理] 警告：线程 {name} 未能在超时时间内正常退出。")
+
+        # 3. 执行默认的窗口关闭与资源销毁
+        event.accept()
 
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
