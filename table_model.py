@@ -363,7 +363,10 @@ class FundTableDelegate(QStyledItemDelegate):
         
         # 确定文本颜色 - 选中时不再强制变白，保留原有的红绿颜色逻辑
         text_color = self._get_text_color(data, header)
-        painter.setPen(text_color)
+        if text_color:
+            painter.setPen(text_color)
+        else:
+            painter.setPen(option.palette.text().color())
         
         # 对"基金名称"、"基金板块"、"最优参数"、"投资参考建议"列启用换行
         if header in ["基金名称", "基金板块", "最优参数", "投资参考建议"]:
@@ -371,7 +374,7 @@ class FundTableDelegate(QStyledItemDelegate):
             doc = QTextDocument()
             doc.setTextWidth(option.rect.width() - 4)
             # 将颜色转换为 hex 格式
-            color_name = text_color.name()
+            color_name = text_color.name() if text_color else option.palette.text().color().name()
             
             if is_buy_triggered and header == "最优参数":
                 data_clean = str(data).replace(" ", "&nbsp;")
@@ -550,7 +553,8 @@ class FundTableDelegate(QStyledItemDelegate):
                     # 给彩虹温度计加文字留出适当的宽裕空间
                     return QSize(150, 42)
                 else:
-                    color_name = self._get_text_color(data, header).name()
+                    text_color = self._get_text_color(data, header)
+                    color_name = text_color.name() if text_color else option.palette.text().color().name()
                     doc.setHtml(f"<div style='text-align: center; margin: 0; padding: 0; color: {color_name};'>{str(data)}</div>")
                     
                 doc.adjustSize()
@@ -644,7 +648,7 @@ class FundTableDelegate(QStyledItemDelegate):
             elif "已添加" in data_str:
                 return QColor("#95a5a6")  # 灰色
         
-        return QColor("#000000")  # 默认黑色
+        return None  # 返回 None 以自适应系统明暗主题色
 
 
 class CheckboxCellWidget(QWidget):

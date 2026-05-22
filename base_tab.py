@@ -1,7 +1,8 @@
 # base_tab.py
 import traceback
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTableView, QHeaderView
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView
 from PySide6.QtCore import Qt, Signal
+from qfluentwidgets import SearchLineEdit, PushButton, PrimaryPushButton, SwitchButton
 from table_model import FundTableModel, FundFilterProxyModel, FundTableDelegate
 
 class BaseFundTableTab(QWidget):
@@ -28,29 +29,63 @@ class BaseFundTableTab(QWidget):
 
     def init_ui(self):
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setSpacing(10)
 
-        # 1. 创建搜索过滤栏 (除了'other'之外的 Tab 都有)
-        if self.table_type != "other":
-            self.filter_layout = QHBoxLayout()
-            self.filter_layout.setContentsMargins(5, 5, 5, 5)
-            self.filter_input = QLineEdit()
+        # 1. 创建精致的顶部工具栏布局
+        self.top_bar_layout = QHBoxLayout()
+        self.top_bar_layout.setContentsMargins(0, 0, 0, 5)
+        self.top_bar_layout.setSpacing(10)
+
+        # 1.1 如果是 special 或 my_fund，添加“全市场搜索并添加自选”的左侧模块
+        if self.table_type in ["special", "my_fund"]:
+            self.input_box = SearchLineEdit()
+            self.input_box.setPlaceholderText("输入代码/名称搜索添加, 如: 白酒, bj, 004433-消费")
+            self.input_box.setFixedWidth(280)
+            self.input_box.setFixedHeight(32)
+            self.top_bar_layout.addWidget(self.input_box)
+
+            self.btn_add = PrimaryPushButton("➕ 添加自选")
+            self.btn_add.setFixedHeight(32)
+            self.top_bar_layout.addWidget(self.btn_add)
+
+            self.btn_add_special = PushButton("🔥 特别关注")
+            self.btn_add_special.setFixedHeight(32)
+            self.btn_add_special.setStyleSheet("color: #e74c3c; border-color: rgba(231, 76, 60, 0.4);")
+            self.top_bar_layout.addWidget(self.btn_add_special)
             
-            # 根据类型定制不同的搜索提示
+            self.top_bar_layout.addSpacing(15)
+
+        # 1.2 本地搜索过滤输入框 (除了'other'之外的 Tab 都有)
+        if self.table_type != "other":
+            self.filter_input = SearchLineEdit()
             placeholders = {
-                "special": "🔍 在特别关注中搜索 (名称/代码)...",
-                "my_fund": "🔍 在自选基金中搜索 (名称/代码)...",
+                "special": "🔍 本地过滤 (名称/代码)...",
+                "my_fund": "🔍 本地过滤 (名称/代码)...",
                 "ranking": "🔍 在排行榜中搜索 (名称/代码)...",
                 "valuation": "🔍 在估值榜中搜索 (名称/代码)...",
                 "cycle": "🔍 在周期榜中搜索 (名称/代码/板块)..."
             }
-            self.filter_input.setPlaceholderText(placeholders.get(self.table_type, "🔍 搜索 (名称/代码)..."))
-            self.filter_input.setClearButtonEnabled(True)
-            self.filter_input.setFixedHeight(30)
+            self.filter_input.setPlaceholderText(placeholders.get(self.table_type, "🔍 本地过滤 (名称/代码)..."))
+            self.filter_input.setFixedWidth(220)
+            self.filter_input.setFixedHeight(32)
             self.filter_input.textChanged.connect(self.on_filter_text_changed)
-            self.filter_layout.addWidget(self.filter_input)
-            self.layout.addLayout(self.filter_layout)
+            self.top_bar_layout.addWidget(self.filter_input)
+
+        self.top_bar_layout.addStretch()
+
+        # 1.3 统一加上“🔄 刷新全市场”按钮和“自动刷新 (60s)”滑动开关
+        self.btn_refresh = PushButton("🔄 刷新全市场")
+        self.btn_refresh.setFixedHeight(32)
+        self.top_bar_layout.addWidget(self.btn_refresh)
+
+        self.btn_auto = SwitchButton()
+        self.btn_auto.setOffText("自动刷新")
+        self.btn_auto.setOnText("自动刷新")
+        self.btn_auto.setFixedHeight(32)
+        self.top_bar_layout.addWidget(self.btn_auto)
+
+        self.layout.addLayout(self.top_bar_layout)
 
         # 2. 创建表格
         self.table = QTableView()

@@ -5,13 +5,30 @@ import re
 import time
 import requests
 import threading
+import sys
 
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                               QLineEdit, QPushButton, QTableView, QHeaderView, 
-                               QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
+# 临时屏蔽第三方库 qfluentwidgets 导入时的广告打印
+class _SilenceStdout:
+    def __enter__(self):
+        self._orig_stdout = sys.stdout
+        sys.stdout = self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout = self._orig_stdout
+    def write(self, *args, **kwargs):
+        pass
+    def flush(self, *args, **kwargs):
+        pass
+
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
+                               QMessageBox, QListWidget, QListWidgetItem,
                                QMenu, QStackedWidget, QLabel)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QBrush, QFont, QAction
+
+with _SilenceStdout():
+    from qfluentwidgets import MSFluentWindow, Theme, setTheme, toggleTheme, NavigationItemPosition, InfoBar, InfoBarPosition
+    from qfluentwidgets import FluentIcon as FIF
+
 
 # 引入拆分出去的模块
 from config import CONFIG_FILE
@@ -107,7 +124,58 @@ CYCLE_FUNDS = [
     }
 ]
 
-class FundApp(QMainWindow):
+class FakeStatusBar:
+    def __init__(self, parent):
+        self.parent = parent
+        
+    def showMessage(self, text, timeout=0):
+        # 兼容处理 timeout 参数
+        duration = timeout if isinstance(timeout, (int, float)) and timeout > 0 else 2000
+        
+        if "✅" in text:
+            InfoBar.success(
+                title="成功",
+                content=text.replace("✅", "").strip(),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration,
+                parent=self.parent
+            )
+        elif "⚠️" in text:
+            InfoBar.warning(
+                title="提示",
+                content=text.replace("⚠️", "").strip(),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration,
+                parent=self.parent
+            )
+        elif "🗑️" in text:
+            InfoBar.info(
+                title="删除",
+                content=text.replace("🗑️", "").strip(),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration,
+                parent=self.parent
+            )
+        elif "失败" in text or "错误" in text:
+            InfoBar.error(
+                title="错误",
+                content=text,
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration + 1000,
+                parent=self.parent
+            )
+        else:
+            self.parent.setStatusTip(text)
+
+class FundApp(MSFluentWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("场外基金深度监控")
@@ -121,6 +189,8 @@ class FundApp(QMainWindow):
         self.shared_sector_map = {} # 新增：全局板块 API 缓存映射库
         self.need_config_save = False 
         self.active_buy_signals = {} 
+        self.is_refreshing = False
+        self._status_bar = FakeStatusBar(self)
         
         # 初始化数据库并从本地加载历史数据
         self.db = FundHistoryDB()
@@ -134,79 +204,11 @@ class FundApp(QMainWindow):
         self.load_all_funds_dict() 
         self.refresh_data()
 
+    def statusBar(self):
+        return self._status_bar
+
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-
-        top_layout = QHBoxLayout()
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("输入基金代码/名称/拼音首字母搜索, 如: 白酒, bj, 004433-消费")
-        self.input_box.setFixedHeight(35)
-        self.input_box.textChanged.connect(self.on_search_input_changed)
-        
-        # 搜索自动补全弹窗
-        self.search_popup = QListWidget(self)
-        self.search_popup.setWindowFlags(Qt.ToolTip)
-        self.search_popup.setFocusPolicy(Qt.NoFocus)
-        self.search_popup.setMouseTracking(True)
-        self.search_popup.itemClicked.connect(self.on_search_item_clicked)
-        self.search_popup.setStyleSheet("""
-            QListWidget {
-                background-color: #ffffff;
-                border: 1px solid #b2bec3;
-                border-radius: 4px;
-                font-size: 13px;
-                padding: 2px 0;
-                outline: none;
-            }
-            QListWidget::item {
-                padding: 6px 10px;
-                border-bottom: 1px solid #f1f2f6;
-                color: #2d3436;
-            }
-            QListWidget::item:last-child { border-bottom: none; }
-            QListWidget::item:hover {
-                background-color: #e8f4fd;
-                color: #0097e6;
-            }
-        """)
-        self.search_popup.hide()
-        
-        self.btn_add = QPushButton("➕ 添加到自选")
-        self.btn_add.setFixedHeight(35)
-        self.btn_add.clicked.connect(self.add_funds)
-
-        self.btn_add_special = QPushButton("🔥 添加到特别关注")
-        self.btn_add_special.setFixedHeight(35)
-        self.btn_add_special.setStyleSheet("background-color: #eb4d4b; color: white;")
-        self.btn_add_special.clicked.connect(self.add_special_funds)
-
-        self.btn_refresh = QPushButton("🔄 刷新全市场")
-        self.btn_refresh.setFixedHeight(35)
-        self.btn_refresh.clicked.connect(self.refresh_data)
-
-        self.btn_auto = QPushButton("▶ 开启自动刷新(60s)")
-        self.btn_auto.setFixedHeight(35)
-        self.btn_auto.setStyleSheet("background-color: #2ed573; color: white;") 
-        self.btn_auto.clicked.connect(self.toggle_auto_refresh)
-        
-        self.btn_settings = QPushButton("⚙️ 设置指标与列显示")
-        self.btn_settings.setFixedHeight(35)
-        self.btn_settings.setStyleSheet("background-color: #747d8c; color: white;")
-        self.btn_settings.clicked.connect(self.open_settings)
-
-        top_layout.addWidget(self.input_box)
-        top_layout.addWidget(self.btn_add)
-        top_layout.addWidget(self.btn_add_special)
-        top_layout.addWidget(self.btn_refresh)
-        top_layout.addWidget(self.btn_auto) 
-        top_layout.addWidget(self.btn_settings)
-        layout.addLayout(top_layout)
-
-        self.tabs = QTabWidget()
-        
-        # 实例化各个拆分后的 Tab 页面
+        # 1. 实例化各个拆分后的 Tab 页面
         self.special_tab = SpecialAttentionTab(self)
         self.my_funds_tab = MyFundsTab(self)
         self.ranking_tab = RankingTab(self)
@@ -214,8 +216,17 @@ class FundApp(QMainWindow):
         self.cycle_tab = CycleBoardTab(self)
         self.other_tab = OtherFundsTab(self)
         self.strategy_tab = StrategyCenterTab(self.get_fund_lists, self.history_cache, self.db, self)
-        
-        # 兼容性挂载表格变量引用，使得其他地方直接调用如 self.table0 依旧畅通无阻
+
+        # 2. 设置唯一的 ObjectName，这是 qfluentwidgets 子窗口切换所必需的
+        self.special_tab.setObjectName("special_tab")
+        self.my_funds_tab.setObjectName("my_funds_tab")
+        self.ranking_tab.setObjectName("ranking_tab")
+        self.valuation_tab.setObjectName("valuation_tab")
+        self.cycle_tab.setObjectName("cycle_tab")
+        self.other_tab.setObjectName("other_tab")
+        self.strategy_tab.setObjectName("strategy_tab")
+
+        # 3. 兼容性挂载表格变量引用，使得其他地方直接调用如 self.table0 依旧畅通无阻
         self.table0 = self.special_tab.table
         self.table1 = self.my_funds_tab.table
         self.table2 = self.ranking_tab.table
@@ -232,27 +243,82 @@ class FundApp(QMainWindow):
         self.tab4 = self.strategy_tab
         self.backtest_widget = self.strategy_tab.backtest_widget
         
-        # 批量绑定子 Tab 的高级事件信号到 Controller (FundApp) 的对应业务函数
-        for tab in [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]:
+        # 4. 注册到左侧优雅导航栏
+        self.addSubInterface(self.special_tab, FIF.PIN, "特别关注")
+        self.addSubInterface(self.my_funds_tab, FIF.HEART, "自选基金")
+        self.addSubInterface(self.ranking_tab, FIF.UP, "ETF涨跌榜")
+        self.addSubInterface(self.valuation_tab, FIF.TILES, "估值榜")
+        self.addSubInterface(self.cycle_tab, FIF.CALENDAR, "周期榜")
+        self.addSubInterface(self.other_tab, FIF.FOLDER, "其他")
+        self.addSubInterface(self.strategy_tab, FIF.ROBOT, "策略中心")
+
+        # 5. 在左下角导航栏底部注册常驻控制项
+        self.navigationInterface.addItem(
+            routeKey="theme_toggle",
+            icon=FIF.CONSTRACT,
+            text="切换主题",
+            onClick=self.toggle_app_theme,
+            position=NavigationItemPosition.BOTTOM
+        )
+        self.navigationInterface.addItem(
+            routeKey="settings_btn",
+            icon=FIF.SETTING,
+            text="配置",
+            onClick=self.open_settings,
+            position=NavigationItemPosition.BOTTOM
+        )
+
+        # 6. 初始化搜索自动补全弹窗 (父对象设为主窗口以跨页面悬浮)
+        self.search_popup = QListWidget(self)
+        self.search_popup.setWindowFlags(Qt.ToolTip)
+        self.search_popup.setFocusPolicy(Qt.NoFocus)
+        self.search_popup.setMouseTracking(True)
+        self.search_popup.itemClicked.connect(self.on_search_item_clicked)
+        self.search_popup.setStyleSheet("""
+            QListWidget {
+                background-color: white;
+                border: 1px solid #dcdde1;
+                border-radius: 6px;
+                font-size: 13px;
+                padding: 2px 0;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 6px 10px;
+                border-bottom: 1px solid #f1f2f6;
+                color: #2f3542;
+            }
+            QListWidget::item:last-child { border-bottom: none; }
+            QListWidget::item:hover {
+                background-color: #e8f4fd;
+                color: #0097e6;
+            }
+        """)
+        self.search_popup.hide()
+        self.active_input_box = self.special_tab.input_box # 默认激活的输入框
+
+        # 7. 桥接并绑定各个 Tab 页面的顶级工具栏事件
+        tabs_list = [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]
+        
+        # 7.1 特化桥接：特别关注 和 我的自选 顶部的全市场添加搜索联想
+        for tab in [self.special_tab, self.my_funds_tab]:
+            tab.input_box.textChanged.connect(self.on_search_input_changed)
+            tab.btn_add.clicked.connect(self.add_funds)
+            tab.btn_add_special.clicked.connect(self.add_special_funds)
+
+        # 7.2 统一桥接：刷新按钮和自动刷新滑动开关
+        for tab in tabs_list:
+            tab.btn_refresh.clicked.connect(self.refresh_data)
+            tab.btn_auto.checkedChanged.connect(self.on_tab_auto_refresh_toggled)
+
+        # 8. 批量绑定子 Tab 的高级事件信号到 Controller (FundApp) 的对应业务函数
+        for tab in tabs_list:
             tab.delete_fund_signal.connect(self.delete_fund)
             tab.add_fund_signal.connect(self.add_from_market)
             tab.toggle_pin_signal.connect(self.toggle_pin_fund)
             tab.toggle_special_signal.connect(self.toggle_special_fund)
             tab.show_chart_signal.connect(self.show_detailed_chart_by_code)
             tab.show_backtest_signal.connect(self.show_backtest_dialog)
-
-        # 添加到 Tab 容器中
-        self.tabs.addTab(self.special_tab, "🔥 特别关注")
-        self.tabs.addTab(self.my_funds_tab, "⭐ 我的自选基金")
-        self.tabs.addTab(self.ranking_tab, "📈 今日指数ETF独立涨跌榜")
-        self.tabs.setTabToolTip(2, "已过滤同质化")
-        self.tabs.addTab(self.valuation_tab, "💎 估值榜")
-        self.tabs.setTabToolTip(3, "PE/PB 最高最低")
-        self.tabs.addTab(self.cycle_tab, "📅 周期参考榜")
-        self.tabs.addTab(self.other_tab, "📦 其他(已有数据)")
-        self.tabs.addTab(self.strategy_tab, "💡 策略中心")
-        
-        layout.addWidget(self.tabs)
 
         self.apply_styles()
         
@@ -368,45 +434,8 @@ class FundApp(QMainWindow):
                 margin-top: 5px;
                 margin-bottom: 5px;
             }
-            QMainWindow { background-color: #f5f6fa; }
-            QLineEdit { border: 1px solid #dcdde1; border-radius: 4px; padding: 5px; font-size: 13px;}
-            QPushButton { background-color: #0097e6; color: white; border-radius: 4px; font-weight: bold; font-size: 13px; padding: 0 15px;}
-            QPushButton:hover { background-color: #00a8ff; }
-            QPushButton:disabled { background-color: #a4b0be; }
-            QTableView { 
-                background-color: white; 
-                border: 1px solid #dcdde1; 
-                border-radius: 4px; 
-                font-size: 13px;
-                outline: none;
-            }
             QTableView::item:hover {
                 background-color: transparent;
-            }
-            QHeaderView::section { 
-                background-color: #f1f2f6; 
-                padding: 5px; 
-                font-weight: bold; 
-                border-right: 1px solid #dcdde1; 
-                border-bottom: 1px solid #dcdde1;
-                color: #2f3542;
-            }
-            QTabWidget::pane { border: 1px solid #dcdde1; border-radius: 4px; background: white; margin-top:-1px;}
-            QTabBar::tab { background: #f1f2f6; padding: 8px 20px; border: 1px solid #dcdde1; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; font-weight: bold;}
-            QTabBar::tab:selected { background: white; border-bottom: 2px solid white; border-top: 3px solid #0097e6; }
-            QScrollBar:vertical {
-                border: none;
-                background: #f1f2f6;
-                width: 10px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #ced6e0;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #a4b0be;
             }
         """)
 
@@ -476,24 +505,42 @@ class FundApp(QMainWindow):
     def get_fund_lists(self):
         return {
             "特别关注": [(self.model0.get_row_data(i)["基金代码"], self.model0.get_row_data(i)["基金名称"]) for i in range(self.model0.rowCount())] if self.model0 else [],
-            "我的自选基金": [(self.model1.get_row_data(i)["基金代码"], self.model1.get_row_data(i)["基金名称"]) for i in range(self.model1.rowCount())] if self.model1 else [],
-            "今日指数ETF独立涨跌榜": [(self.model2.get_row_data(i)["基金代码"], self.model2.get_row_data(i)["基金名称"]) for i in range(self.model2.rowCount())] if self.model2 else [],
+            "自选基金": [(self.model1.get_row_data(i)["基金代码"], self.model1.get_row_data(i)["基金名称"]) for i in range(self.model1.rowCount())] if self.model1 else [],
+            "ETF涨跌榜": [(self.model2.get_row_data(i)["基金代码"], self.model2.get_row_data(i)["基金名称"]) for i in range(self.model2.rowCount())] if self.model2 else [],
             "估值榜": [(self.model3.get_row_data(i)["基金代码"], self.model3.get_row_data(i)["基金名称"]) for i in range(self.model3.rowCount())] if self.model3 else [],
-            "其他(已有数据)": [(self.model_other.get_row_data(i)["基金代码"], self.model_other.get_row_data(i)["基金名称"]) for i in range(self.model_other.rowCount())] if self.model_other else []
+            "其他": [(self.model_other.get_row_data(i)["基金代码"], self.model_other.get_row_data(i)["基金名称"]) for i in range(self.model_other.rowCount())] if self.model_other else []
         }
 
-    def toggle_auto_refresh(self):
-        if self.refresh_timer.isActive():
-            self.refresh_timer.stop()
-            self.btn_auto.setText("▶ 开启自动刷新(60s)")
-            self.btn_auto.setStyleSheet("background-color: #2ed573; color: white;") 
-            self.statusBar().showMessage("已关闭自动刷新")
+    def toggle_app_theme(self):
+        """一键无缝切换明暗主题"""
+        toggleTheme()
+
+    def on_tab_auto_refresh_toggled(self, checked):
+        """响应任何子 Tab 内 SwitchButton 滑动开关的状态变更"""
+        if self.refresh_timer.isActive() != checked:
+            self.toggle_auto_refresh(checked)
+
+    def toggle_auto_refresh(self, checked=None):
+        """实现全局自动刷新状态同步"""
+        if checked is None:
+            checked = not self.refresh_timer.isActive()
+            
+        if checked:
+            if not self.refresh_timer.isActive():
+                self.refresh_timer.start(self.refresh_interval)
+                self.statusBar().showMessage("已开启自动刷新，每60秒更新一次")
+                self.refresh_data()
         else:
-            self.refresh_timer.start(self.refresh_interval)
-            self.btn_auto.setText("⏸ 停止自动刷新")
-            self.btn_auto.setStyleSheet("background-color: #ffa502; color: white;") 
-            self.statusBar().showMessage("已开启自动刷新，每60秒更新一次")
-            self.refresh_data() 
+            if self.refresh_timer.isActive():
+                self.refresh_timer.stop()
+                self.statusBar().showMessage("已关闭自动刷新")
+                
+        # 批量同步更新所有 Tab 内 SwitchButton 的状态以保持全局视觉一致
+        for tab in [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]:
+            if hasattr(tab, 'btn_auto'):
+                tab.btn_auto.blockSignals(True)
+                tab.btn_auto.setChecked(checked)
+                tab.btn_auto.blockSignals(False) 
 
     def load_all_funds_dict(self):
         self.all_funds_code_to_name = {} 
@@ -520,6 +567,10 @@ class FundApp(QMainWindow):
 
     def on_search_input_changed(self, text):
         """输入框文本变化时，执行模糊搜索并显示自动补全弹窗"""
+        sender_widget = self.sender()
+        if sender_widget:
+            self.active_input_box = sender_widget
+            
         text = text.strip()
         if ',' in text or '，' in text:
             self.search_popup.hide()
@@ -554,9 +605,9 @@ class FundApp(QMainWindow):
                 list_item.setData(Qt.UserRole + 1, name)
                 self.search_popup.addItem(list_item)
             
-            pos = self.input_box.mapToGlobal(self.input_box.rect().bottomLeft())
+            pos = self.active_input_box.mapToGlobal(self.active_input_box.rect().bottomLeft())
             popup_h = min(380, len(results) * 28 + 8)
-            self.search_popup.setFixedSize(self.input_box.width(), popup_h)
+            self.search_popup.setFixedSize(self.active_input_box.width(), popup_h)
             self.search_popup.move(pos)
             self.search_popup.show()
         else:
@@ -568,16 +619,16 @@ class FundApp(QMainWindow):
         name = item.data(Qt.UserRole + 1)
         
         # 提取用户输入的板块后缀
-        current_text = self.input_box.text()
+        current_text = self.active_input_box.text()
         parts = current_text.split('-', 1)
         sector = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
         if not sector:
             sector = extract_fund_sector(name, code)
         
         self.search_popup.hide()
-        self.input_box.blockSignals(True)
-        self.input_box.clear()
-        self.input_box.blockSignals(False)
+        self.active_input_box.blockSignals(True)
+        self.active_input_box.clear()
+        self.active_input_box.blockSignals(False)
         
         if code not in self.config.get("funds_info", {}):
             self.config["funds_info"][code] = {"name": name, "sector": sector, "is_held": False, "amount": "", "yield_rate": ""}
@@ -592,7 +643,7 @@ class FundApp(QMainWindow):
             self.statusBar().showMessage(f"⚠️ {name} ({code}) 已在自选列表中", 3000)
 
     def add_funds(self):
-        text = self.input_box.text().strip()
+        text = self.active_input_box.text().strip()
         if not text: return
         items = text.replace('，', ',').split(',')
         added = 0
@@ -615,14 +666,14 @@ class FundApp(QMainWindow):
                     
         if added > 0:
             self.save_config()
-            self.input_box.clear()
+            self.active_input_box.clear()
             # 这里由于可能添加了多个，简单起见重新同步一下表格（但不刷新全市场）
             self.update_my_funds_table()
             self.update_special_funds_table()
             self.start_individual_fetcher(list(self.config.get("funds_info", {}).keys()))
 
     def add_special_funds(self):
-        text = self.input_box.text().strip()
+        text = self.active_input_box.text().strip()
         if not text: return
         items = text.replace('，', ',').split(',')
         added = 0
@@ -647,7 +698,7 @@ class FundApp(QMainWindow):
                     
         if added > 0:
             self.save_config()
-            self.input_box.clear()
+            self.active_input_box.clear()
             self.update_my_funds_table()
             self.update_special_funds_table()
             self.start_individual_fetcher(list(self.config.get("funds_info", {}).keys()))
@@ -995,9 +1046,14 @@ class FundApp(QMainWindow):
         self.fetcher.start()
 
     def refresh_data(self):
-        if not self.btn_refresh.isEnabled(): return
+        if getattr(self, 'is_refreshing', False):
+            return
+        
+        self.is_refreshing = True
+        for tab in [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]:
+            if hasattr(tab, 'btn_refresh'):
+                tab.btn_refresh.setEnabled(False)
 
-        self.btn_refresh.setEnabled(False)
         self.latest_data_time = ""  # 重置数据源时间
         
         # 获取基金列表，并按照置顶状态进行初始排序（置顶在前）
@@ -1047,7 +1103,7 @@ class FundApp(QMainWindow):
                 special_row["序号"] = str(len(self.model0.data_rows) + 1)
                 self.model0.add_row(special_row)
         
-        # 灌入周期参考榜静态配置的基础数据行
+        # 灌入周期榜静态配置的基础数据行
         if hasattr(self, 'model_cycle') and self.model_cycle:
             for i, cf in enumerate(CYCLE_FUNDS):
                 row_data = {h: "-" for h in self.cycle_headers}
@@ -1653,7 +1709,11 @@ class FundApp(QMainWindow):
         model.update_row(row, row_data)
 
     def on_fetch_finish(self):
-        self.btn_refresh.setEnabled(True)
+        self.is_refreshing = False
+        for tab in [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]:
+            if hasattr(tab, 'btn_refresh'):
+                tab.btn_refresh.setEnabled(True)
+                
         if self.need_config_save:
             self.save_config()
             self.need_config_save = False

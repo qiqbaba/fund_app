@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt, QRect, QPointF, QPoint, QMargins
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
 import datetime
 
+from qfluentwidgets import LineEdit, ComboBox, CheckBox, PrimaryPushButton, TabWidget
+
 class SettingsDialog(QDialog):
     """自定义设置弹窗"""
     def __init__(self, config, current_headers, val_headers, parent=None):
@@ -23,8 +25,10 @@ class SettingsDialog(QDialog):
         param_group = QGroupBox("量化分析参数")
         param_layout = QFormLayout(param_group)
         
-        self.drop_input = QLineEdit(", ".join(map(str, config.get("drop_days", [2, 4]))))
-        self.pct_input = QLineEdit(", ".join(map(str, config.get("percentile_months", [1, 2, 3, 6, 12, 24]))))
+        self.drop_input = LineEdit()
+        self.drop_input.setText(", ".join(map(str, config.get("drop_days", [2, 4]))))
+        self.pct_input = LineEdit()
+        self.pct_input.setText(", ".join(map(str, config.get("percentile_months", [1, 2, 3, 6, 12, 24]))))
         
         param_layout.addRow(QLabel("跌幅计算天数 (逗号分隔):"), self.drop_input)
         param_layout.addRow(QLabel("百分位计算月数 (逗号分隔):"), self.pct_input)
@@ -34,7 +38,7 @@ class SettingsDialog(QDialog):
         source_group = QGroupBox("数据源手动切换设置")
         source_layout = QFormLayout(source_group)
         
-        self.history_combo = QComboBox()
+        self.history_combo = ComboBox()
         self.history_combo.addItems([
             "智能自动切换 (默认降级)",
             "天天基金移动端 API",
@@ -47,7 +51,7 @@ class SettingsDialog(QDialog):
         if current_his in self.history_sources:
             self.history_combo.setCurrentIndex(self.history_sources.index(current_his))
             
-        self.valuation_combo = QComboBox()
+        self.valuation_combo = ComboBox()
         self.valuation_combo.addItems([
             "智能自动切换 (默认降级)",
             "天天基金实时估值",
@@ -68,7 +72,7 @@ class SettingsDialog(QDialog):
         col_group = QGroupBox("表格列显示配置 (取消勾选即可隐藏)")
         col_layout = QVBoxLayout(col_group)
         
-        self.tab_widget = QTabWidget()
+        self.tab_widget = TabWidget()
         self.checkboxes = {} # tab_key -> {header: checkbox}
         
         # 兼容性读取字典格式
@@ -85,10 +89,10 @@ class SettingsDialog(QDialog):
             
         tabs_info = [
             ("special", "🔥 特别关注", self.current_headers),
-            ("my_fund", "⭐ 我的自选基金", self.current_headers),
-            ("ranking", "📈 今日指数ETF独立涨跌榜", self.current_headers),
+            ("my_fund", "⭐ 自选基金", self.current_headers),
+            ("ranking", "📈 ETF涨跌榜", self.current_headers),
             ("valuation", "💎 估值榜", self.val_headers),
-            ("other", "📦 其他(已有数据)", self.current_headers)
+            ("other", "📦 其他", self.current_headers)
         ]
         
         for tab_key, tab_title, tab_headers in tabs_info:
@@ -103,7 +107,7 @@ class SettingsDialog(QDialog):
             row, col = 0, 0
             for h in tab_headers:
                 if h == "操作": continue
-                cb = QCheckBox(h)
+                cb = CheckBox(h)
                 cb.setChecked(h not in hidden_cols)
                 tab_checkboxes[h] = cb
                 grid.addWidget(cb, row, col)
@@ -122,9 +126,8 @@ class SettingsDialog(QDialog):
         
         # 底部按钮
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("保存配置")
+        save_btn = PrimaryPushButton("保存配置")
         save_btn.setFixedHeight(35)
-        save_btn.setStyleSheet("background-color: #0097e6; color: white; font-weight: bold;")
         save_btn.clicked.connect(self.save_and_accept)
         btn_layout.addWidget(save_btn)
         main_layout.addLayout(btn_layout)

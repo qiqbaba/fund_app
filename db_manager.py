@@ -155,6 +155,10 @@ class FundHistoryDB:
                     update_time REAL
                 )
             ''')
+            
+            # 自动清理未来日期的历史数据记录（防止脏数据进入系统污染状态栏或报表）
+            cursor.execute("DELETE FROM fund_nav_detail WHERE jzrq > date('now', 'localtime')")
+            cursor.execute("DELETE FROM fund_history WHERE jzrq > date('now', 'localtime')")
             conn.commit()
 
     def _db_worker(self):
@@ -255,22 +259,40 @@ class FundHistoryDB:
         return {'jzrq': latest_date, 'navs': navs, 'dates': dates}
 
     def _sync_save_history(self, conn, cursor, fund_code, jzrq, navs, dates=None):
+        today_str = time.strftime('%Y-%m-%d')
+        actual_jzrq = jzrq
+        
         if dates and len(dates) == len(navs):
             # 新格式：批量写入 (fund_code, date, nav) 记录
-            records = [(fund_code, d, float(n)) for d, n in zip(dates, navs) if d and n is not None]
+            records = []
+            for d, n in zip(dates, navs):
+                if d and n is not None:
+                    if d > today_str:
+                        print(f"[FundHistoryDB Warning] 过滤掉未来日期脏数据: {fund_code} - {d} - {n}")
+                        continue
+                    records.append((fund_code, d, float(n)))
             if records:
                 cursor.executemany('''
                     INSERT OR REPLACE INTO fund_nav_detail (fund_code, jzrq, dwjz)
                     VALUES (?, ?, ?)
                 ''', records)
+                # 重新校准最新日期为合法记录中的最大日期（records已按降序排列，第一条即为最新）
+                actual_jzrq = records[0][1]
+            else:
+                # 没有任何合法记录，直接返回，不更新 fund_history
+                return
         else:
             # 容错：如果未提供日期，尝试以 jzrq 写入单条数据
             if navs:
+                if jzrq > today_str:
+                    print(f"[FundHistoryDB Warning] 过滤掉单条未来日期脏数据: {fund_code} - {jzrq}")
+                    return
                 latest_nav = navs[0]
                 cursor.execute('''
                     INSERT OR REPLACE INTO fund_nav_detail (fund_code, jzrq, dwjz)
                     VALUES (?, ?, ?)
                 ''', (fund_code, jzrq, float(latest_nav)))
+                actual_jzrq = jzrq
                 
         current_time = time.time()
         
@@ -279,7 +301,7 @@ class FundHistoryDB:
             INSERT OR REPLACE INTO fund_history 
             (fund_code, jzrq, update_time)
             VALUES (?, ?, ?)
-        ''', (fund_code, jzrq, current_time))
+        ''', (fund_code, actual_jzrq, current_time))
         conn.commit()
 
     def _sync_delete_history(self, conn, cursor, fund_code):

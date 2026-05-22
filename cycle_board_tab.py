@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QHeaderView, QMenu
 from PySide6.QtGui import QAction
 
 class CycleBoardTab(BaseFundTableTab):
-    """周期参考榜 Tab"""
+    """周期榜 Tab"""
 
     def __init__(self, parent=None):
         super().__init__("cycle", parent)

@@ -148,10 +148,10 @@ class BatchBacktestWidget(QWidget):
             for code, name in fund_lists.get("特别关注", []):
                 test_funds_dict[code] = name
         if self.cb_tab1.isChecked():
-            for code, name in fund_lists.get("我的自选基金", []):
+            for code, name in fund_lists.get("自选基金", []):
                 test_funds_dict[code] = name
         if self.cb_tab2.isChecked():
-            for code, name in fund_lists.get("今日指数ETF独立涨跌榜", []):
+            for code, name in fund_lists.get("ETF涨跌榜", []):
                 test_funds_dict[code] = name
         if self.cb_tab3.isChecked():
             for code, name in fund_lists.get("估值榜", []):
@@ -403,10 +403,10 @@ class BatchBacktestWidget(QWidget):
             for code, name in fund_lists.get("特别关注", []):
                 test_funds_dict[code] = name
         if self.cb_tab1.isChecked():
-            for code, name in fund_lists.get("我的自选基金", []):
+            for code, name in fund_lists.get("自选基金", []):
                 test_funds_dict[code] = name
         if self.cb_tab2.isChecked():
-            for code, name in fund_lists.get("今日指数ETF独立涨跌榜", []):
+            for code, name in fund_lists.get("ETF涨跌榜", []):
                 test_funds_dict[code] = name
         if self.cb_tab3.isChecked():
             for code, name in fund_lists.get("估值榜", []):
