@@ -443,14 +443,21 @@ class FundApp(QMainWindow):
     def open_settings(self):
         old_drops = list(self.config.get("drop_days", []))
         old_pcts = list(self.config.get("percentile_months", []))
+        old_history_source = self.config.get("history_source", "Auto")
+        old_valuation_source = self.config.get("valuation_source", "Auto")
         
         dialog = SettingsDialog(self.config, self.headers, self.val_headers, self)
         if dialog.exec():
             self.save_config()
             
-            # 如果影响了列的数量（即数据参数变化），需要重建表头和重新获取数据
+            # 如果影响了列的数量（即数据参数变化），或者手动切换了数据源，需要重建表头或重新获取数据
+            source_changed = (self.config.get("history_source", "Auto") != old_history_source or 
+                              self.config.get("valuation_source", "Auto") != old_valuation_source)
+            
             if self.config.get("drop_days") != old_drops or self.config.get("percentile_months") != old_pcts:
                 self.rebuild_table_headers()
+                self.refresh_data()
+            elif source_changed:
                 self.refresh_data()
             else:
                 # 如果仅仅是显示/隐藏列变化，不需要重建 model，直接更新视图即可，避免数据消失

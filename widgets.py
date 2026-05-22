@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QLabel, 
                                QGroupBox, QGridLayout, QCheckBox, QHBoxLayout, 
                                QPushButton, QMessageBox, QVBoxLayout, QWidget,
-                               QTabWidget)
+                               QTabWidget, QComboBox)
 from PySide6.QtGui import QPainter, QPolygonF, QPen, QColor, QFont, QLinearGradient, QBrush, QGradient
 from PySide6.QtCore import Qt, QRect, QPointF, QPoint, QMargins
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
@@ -12,7 +12,7 @@ class SettingsDialog(QDialog):
     def __init__(self, config, current_headers, val_headers, parent=None):
         super().__init__(parent)
         self.setWindowTitle("自定义参数与列显示设置")
-        self.resize(650, 480)
+        self.resize(650, 560)
         self.config = config
         self.current_headers = current_headers
         self.val_headers = val_headers
@@ -29,6 +29,40 @@ class SettingsDialog(QDialog):
         param_layout.addRow(QLabel("跌幅计算天数 (逗号分隔):"), self.drop_input)
         param_layout.addRow(QLabel("百分位计算月数 (逗号分隔):"), self.pct_input)
         main_layout.addWidget(param_group)
+
+        # 数据源手动切换设置
+        source_group = QGroupBox("数据源手动切换设置")
+        source_layout = QFormLayout(source_group)
+        
+        self.history_combo = QComboBox()
+        self.history_combo.addItems([
+            "智能自动切换 (默认降级)",
+            "天天基金移动端 API",
+            "天天基金网页端 F10",
+            "AkShare 量化接口",
+            "Tushare 量化接口"
+        ])
+        self.history_sources = ["Auto", "EastMoneyMobile", "EastMoneyWeb", "AkShare", "Tushare"]
+        current_his = config.get("history_source", "Auto")
+        if current_his in self.history_sources:
+            self.history_combo.setCurrentIndex(self.history_sources.index(current_his))
+            
+        self.valuation_combo = QComboBox()
+        self.valuation_combo.addItems([
+            "智能自动切换 (默认降级)",
+            "天天基金实时估值",
+            "新浪财经实时估值",
+            "腾讯财经实时估值",
+            "网易财经实时估值"
+        ])
+        self.valuation_sources = ["Auto", "EastMoneyGz", "SinaGz", "TencentGz", "NetEaseGz"]
+        current_val = config.get("valuation_source", "Auto")
+        if current_val in self.valuation_sources:
+            self.valuation_combo.setCurrentIndex(self.valuation_sources.index(current_val))
+            
+        source_layout.addRow(QLabel("历史净值数据源:"), self.history_combo)
+        source_layout.addRow(QLabel("实时估值数据源:"), self.valuation_combo)
+        main_layout.addWidget(source_group)
         
         # 各 Tab 列显示设置区域
         col_group = QGroupBox("表格列显示配置 (取消勾选即可隐藏)")
@@ -101,6 +135,10 @@ class SettingsDialog(QDialog):
             pcts = [int(x.strip()) for x in self.pct_input.text().split(",") if x.strip().isdigit()]
             self.config["drop_days"] = drops if drops else [2, 4]
             self.config["percentile_months"] = pcts if pcts else [1, 2, 3, 6, 12, 24]
+            
+            # 保存手动选择的数据源
+            self.config["history_source"] = self.history_sources[self.history_combo.currentIndex()]
+            self.config["valuation_source"] = self.valuation_sources[self.valuation_combo.currentIndex()]
             
             hidden_cols_config = {}
             for tab_key, tab_checkboxes in self.checkboxes.items():

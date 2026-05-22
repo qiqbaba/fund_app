@@ -189,90 +189,74 @@ class FundDataFetcher(QThread):
         else:
             page_size_to_fetch = 2000
 
-        # ================= 2. 如果本地没有历史数据，或者需要更新（与今天日期不一致），则从接口获取 =================
+        # 实例化抽象数据网关层
+        from data_gateway import FundDataGateway
+        history_source = self.config.get("history_source", "Auto")
+        valuation_source = self.config.get("valuation_source", "Auto")
+        gateway = FundDataGateway(session, history_source=history_source, valuation_source=valuation_source)
+
+        # ================= 2. 如果本地没有历史数据，或者需要更新（与今天日期不一致），则通过网关获取 =================
         if not history_success or need_api_update:
-            his_url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={code}&pageIndex=1&pageSize={page_size_to_fetch}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
             try:
-                r_his = session.get(his_url, timeout=5)
-                his_data = r_his.json()
-                if his_data.get("ErrCode") == 0 and his_data.get("Datas"):
-                    navs = []
-                    dates = []
-                    for item in his_data.get("Datas"):
-                        try:
-                            val = item.get("DWJZ")
-                            dt = item.get("FSRQ")
-                            if val: 
-                                navs.append(float(val))
-                                dates.append(dt)
-                        except ValueError: pass
+                his_res = gateway.fetch_history(code, page_size=page_size_to_fetch)
+                if his_res:
+                    navs = his_res['navs']
+                    dates = his_res['dates']
+                    latest_item = his_res['latest_item']
+                    latest_date = his_res['jzrq']
                     
-                    if navs:
-                        latest_item = his_data.get("Datas")[0]
-                        latest_date = latest_item.get("FSRQ", "")
+                    # 如果是增量更新并且本地已有历史数据，进行拼接和去重
+                    if page_size_to_fetch < 2000 and history_data:
+                        old_dates = history_data.get('dates') or []
+                        old_navs = history_data.get('navs') or []
                         
-                        # 如果是增量更新并且本地已有历史数据，进行拼接和去重
-                        if page_size_to_fetch < 2000 and history_data:
-                            old_dates = history_data.get('dates') or []
-                            old_navs = history_data.get('navs') or []
-                            
-                            # 合并并以日期为键去重
-                            combined = {}
-                            for d, n in zip(old_dates, old_navs):
-                                combined[d] = n
-                            for d, n in zip(dates, navs):
-                                combined[d] = n
-                            
-                            # 重新按日期降序排列
-                            sorted_items = sorted(combined.items(), key=lambda x: x[0], reverse=True)
-                            merged_dates = [item[0] for item in sorted_items]
-                            merged_navs = [item[1] for item in sorted_items]
-                            
-                            history_data = {'jzrq': latest_date, 'navs': merged_navs, 'dates': merged_dates}
-                        else:
-                            # 首次抓取或全量更新
-                            history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+                        # 合并并以日期为键去重
+                        combined = {}
+                        for d, n in zip(old_dates, old_navs):
+                            combined[d] = n
+                        for d, n in zip(dates, navs):
+                            combined[d] = n
                         
-                        data['new_history'] = history_data
-                        self.history_cache[code] = history_data
+                        # 重新按日期降序排列
+                        sorted_items = sorted(combined.items(), key=lambda x: x[0], reverse=True)
+                        merged_dates = [item[0] for item in sorted_items]
+                        merged_navs = [item[1] for item in sorted_items]
                         
-                        # 保存合并/全量后的数据到本地数据库
-                        self.db.save_history(code, latest_date, history_data['navs'], history_data['dates'])
-                        
-                        data['jzrq'] = latest_date
-                        data['dwjz'] = str(history_data['navs'][0])
-                        data['gsz'] = str(history_data['navs'][0])
-                        data['gszzl'] = latest_item.get("JZZZL", "")
-                        data['gztime'] = f"{latest_date} (实际净值)"
-                        history_success = True
+                        history_data = {'jzrq': latest_date, 'navs': merged_navs, 'dates': merged_dates}
+                    else:
+                        # 首次抓取或全量更新
+                        history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+                    
+                    data['new_history'] = history_data
+                    self.history_cache[code] = history_data
+                    
+                    # 保存合并/全量后的数据到本地数据库
+                    self.db.save_history(code, latest_date, history_data['navs'], history_data['dates'])
+                    
+                    data['jzrq'] = latest_date
+                    data['dwjz'] = str(history_data['navs'][0])
+                    data['gsz'] = str(history_data['navs'][0])
+                    data['gszzl'] = latest_item.get("JZZZL", "0.00") if latest_item else "0.00"
+                    data['gztime'] = f"{latest_date} (实际净值) [{his_res['source']}]"
+                    history_success = True
             except Exception:
                 pass
 
-        # ================= 3. 尝试获取实时估值数据 (增加重试) =================
-        timestamp = int(time.time() * 1000)
-        url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={timestamp}"
-        
-        for gz_attempt in range(2):
-            try:
-                response = session.get(url, timeout=3)
-                if response.status_code == 200:
-                    match = re.search(r'jsonpgz\((.*?)\);', response.text)
-                    if match:
-                        gz_data = json.loads(match.group(1))
-                        if gz_data.get('name'):
-                            data['name'] = gz_data.get('name')
-                        
-                        if gz_data.get('gsz'):
-                            data['jzrq'] = gz_data.get('jzrq', data.get('jzrq'))
-                            data['dwjz'] = gz_data.get('dwjz', data.get('dwjz'))
-                            data['gsz'] = gz_data.get('gsz')
-                            data['gszzl'] = gz_data.get('gszzl')
-                            data['gztime'] = gz_data.get('gztime')
-                        break # 成功
-                elif response.status_code == 404:
-                    break # 404 没必要重试
-            except Exception:
-                time.sleep(0.5)
+        # ================= 3. 尝试获取实时估值数据 (使用抽象数据网关，支持多源毫秒级平滑降级) =================
+        try:
+            gz_res = gateway.fetch_valuation(code)
+            if gz_res:
+                if gz_res.get('name'):
+                    data['name'] = gz_res.get('name')
+                
+                if gz_res.get('gsz'):
+                    data['jzrq'] = gz_res.get('jzrq', data.get('jzrq'))
+                    data['dwjz'] = gz_res.get('dwjz', data.get('dwjz'))
+                    data['gsz'] = gz_res.get('gsz')
+                    data['gszzl'] = gz_res.get('gszzl')
+                    data['gztime'] = f"{gz_res.get('gztime')} [{gz_res['source']}]"
+        except Exception:
+            pass
 
         if not history_success and 'gztime' not in data:
             return {'error': True, 'code': code, 'msg': "暂无数据"}
