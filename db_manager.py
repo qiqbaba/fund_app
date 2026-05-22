@@ -2,35 +2,144 @@
 import sqlite3
 import json
 import os
+import queue
+import threading
+import time
 from config import BASE_DIR
 
 DB_FILE = os.path.join(BASE_DIR, "fund_history.db")
 
 class FundHistoryDB:
-    """管理基金历史净值数据的 SQLite 数据库"""
-    
+    """管理基金历史净值数据的 SQLite 数据库（单例线程安全队列版）"""
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(FundHistoryDB, cls).__new__(cls, *args, **kwargs)
+        return cls._instance
+
     def __init__(self):
+        if FundHistoryDB._initialized:
+            return
         self.db_path = DB_FILE
-        self._init_db()
-    
-    def _init_db(self):
-        """初始化数据库表结构"""
+        self._init_db_schema()
+        
+        # 初始化轻量级线程安全任务队列
+        self.task_queue = queue.Queue()
+        # 启动唯一的后台写库守护线程
+        self.db_thread = threading.Thread(target=self._db_worker, daemon=True, name="FundHistoryDB-Worker")
+        self.db_thread.start()
+        
+        FundHistoryDB._initialized = True
+
+    def _init_db_schema(self):
+        """主线程初始化或检查数据库表结构，并执行必要的数据迁移"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # 创建基金历史数据表
-            # fund_code: 基金代码
-            # jzrq: 净值日期（最新的日期）
-            # nav_list: JSON 格式的净值列表
-            # update_time: 数据更新时间戳
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS fund_history (
-                    fund_code TEXT PRIMARY KEY,
-                    jzrq TEXT,
-                    nav_list TEXT,
-                    update_time REAL
-                )
-            ''')
-            # 创建基金最优策略参数表
+            cursor.execute("PRAGMA journal_mode=WAL")
+            
+            # 检查 fund_history 表是否存在以及是否包含 nav_list 字段
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='fund_history'")
+            table_exists = cursor.fetchone() is not None
+            
+            has_nav_list = False
+            if table_exists:
+                cursor.execute("PRAGMA table_info(fund_history)")
+                columns = [row[1] for row in cursor.fetchall()]
+                has_nav_list = "nav_list" in columns
+                
+            if table_exists and has_nav_list:
+                print("[FundHistoryDB] 检测到旧版数据库结构，正在启动历史净值数据迁移流程...")
+                try:
+                    # 1. 创建新子表和索引
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS fund_nav_detail (
+                            fund_code TEXT,
+                            jzrq TEXT,
+                            dwjz REAL,
+                            PRIMARY KEY (fund_code, jzrq)
+                        )
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_fund_nav_detail_lookup 
+                        ON fund_nav_detail (fund_code, jzrq DESC)
+                    ''')
+                    
+                    # 2. 读取所有的历史大 JSON 净值
+                    cursor.execute("SELECT fund_code, jzrq, nav_list, update_time FROM fund_history")
+                    rows = cursor.fetchall()
+                    
+                    all_nav_details = []
+                    for fund_code, jzrq, nav_json, update_time in rows:
+                        if not nav_json:
+                            continue
+                        try:
+                            data_list = json.loads(nav_json)
+                            if not data_list:
+                                continue
+                            
+                            if isinstance(data_list[0], list) and len(data_list[0]) == 2:
+                                # 新格式：[[date, nav], [date, nav], ...]
+                                for d, n in data_list:
+                                    if d and n is not None:
+                                        all_nav_details.append((fund_code, d, float(n)))
+                            else:
+                                # 旧格式：[nav, nav, ...]
+                                if data_list:
+                                    all_nav_details.append((fund_code, jzrq, float(data_list[0])))
+                        except Exception as e:
+                            print(f"[Migration Warning] 解析基金 {fund_code} 历史 JSON 失败: {e}")
+                            
+                    # 3. 批量将数据导入 fund_nav_detail
+                    if all_nav_details:
+                        cursor.executemany('''
+                            INSERT OR REPLACE INTO fund_nav_detail (fund_code, jzrq, dwjz)
+                            VALUES (?, ?, ?)
+                        ''', all_nav_details)
+                        print(f"[FundHistoryDB] 成功迁移了 {len(all_nav_details)} 条净值数据到 fund_nav_detail。")
+                        
+                    # 4. 重建 fund_history 表以移除 nav_list 字段
+                    cursor.execute("ALTER TABLE fund_history RENAME TO fund_history_old")
+                    cursor.execute('''
+                        CREATE TABLE fund_history (
+                            fund_code TEXT PRIMARY KEY,
+                            jzrq TEXT,
+                            update_time REAL
+                        )
+                    ''')
+                    cursor.execute('''
+                        INSERT INTO fund_history (fund_code, jzrq, update_time)
+                        SELECT fund_code, jzrq, update_time FROM fund_history_old
+                    ''')
+                    cursor.execute("DROP TABLE fund_history_old")
+                    print("[FundHistoryDB] 数据库成功升级至一对多子表结构！")
+                except Exception as ex:
+                    print(f"[Migration Error] 数据库迁移中途失败: {ex}")
+                    raise ex
+            else:
+                # 正常初始化（全新的库或已经升级完成的库）
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS fund_history (
+                        fund_code TEXT PRIMARY KEY,
+                        jzrq TEXT,
+                        update_time REAL
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS fund_nav_detail (
+                        fund_code TEXT,
+                        jzrq TEXT,
+                        dwjz REAL,
+                        PRIMARY KEY (fund_code, jzrq)
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_fund_nav_detail_lookup 
+                    ON fund_nav_detail (fund_code, jzrq DESC)
+                ''')
+                
+            # 创建基金最优策略参数表（保持原样）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS fund_optimal_strategy (
                     fund_code TEXT PRIMARY KEY,
@@ -47,145 +156,193 @@ class FundHistoryDB:
                 )
             ''')
             conn.commit()
-    
-    def get_history(self, fund_code):
-        """获取基金的历史净值数据
-        返回: {'jzrq': str, 'navs': [float, ...], 'dates': [str, ...]} 或 None
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT jzrq, nav_list FROM fund_history WHERE fund_code = ?', (fund_code,))
-            row = cursor.fetchone()
+
+    def _db_worker(self):
+        """后台数据库写库守护线程核心循环"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # 启用 WAL 模式以最大化并发读写性能
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            pass
             
-            if row:
-                jzrq, nav_json = row
-                try:
-                    data_list = json.loads(nav_json)
-                    if not data_list:
-                        return None
-                    
-                    # 检查是否是新格式 [[date, nav], ...]
-                    if isinstance(data_list[0], list) and len(data_list[0]) == 2:
-                        dates = [item[0] for item in data_list]
-                        navs = [item[1] for item in data_list]
-                        return {'jzrq': jzrq, 'navs': navs, 'dates': dates}
-                    else:
-                        # 旧格式 [nav, nav, ...]
-                        return {'jzrq': jzrq, 'navs': data_list, 'dates': []}
-                except (json.JSONDecodeError, IndexError):
-                    return None
-            return None
-    
-    def save_history(self, fund_code, jzrq, navs, dates=None):
-        """保存或更新基金的历史净值数据
-        fund_code: 基金代码
-        jzrq: 净值日期
-        navs: 净值列表 [float, float, ...]
-        dates: 日期列表 [str, str, ...]
-        """
-        import time
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            if dates and len(dates) == len(navs):
-                # 新格式：存储 [date, nav] 对
-                data_to_save = [[d, n] for d, n in zip(dates, navs)]
-            else:
-                # 兼容旧格式或无日期情况
-                data_to_save = navs
+        while True:
+            try:
+                task = self.task_queue.get()
+                if task is None:
+                    break
                 
-            nav_json = json.dumps(data_to_save)
-            current_time = time.time()
-            
-            cursor.execute('''
-                INSERT OR REPLACE INTO fund_history 
-                (fund_code, jzrq, nav_list, update_time)
-                VALUES (?, ?, ?, ?)
-            ''', (fund_code, jzrq, nav_json, current_time))
-            conn.commit()
-    
+                func_name, args, kwargs, reply_queue = task
+                try:
+                    sync_func = getattr(self, f"_sync_{func_name}")
+                    result = sync_func(conn, cursor, *args, **kwargs)
+                    reply_queue.put((True, result))
+                except Exception as e:
+                    reply_queue.put((False, e))
+                finally:
+                    self.task_queue.task_done()
+            except Exception as e:
+                print(f"[FundHistoryDB-Worker Exception] {e}")
+                time.sleep(0.1)
+                
+        conn.close()
+
+    def _submit_task(self, func_name, *args, **kwargs):
+        """提交任务到队列，并同步阻塞等待返回结果"""
+        reply_queue = queue.Queue()
+        self.task_queue.put((func_name, args, kwargs, reply_queue))
+        success, val = reply_queue.get()
+        if success:
+            return val
+        else:
+            raise val
+
+    # ==================== 外部公开的 API 接口 ====================
+
+    def get_history(self, fund_code):
+        """获取基金的历史净值数据"""
+        return self._submit_task('get_history', fund_code)
+
+    def save_history(self, fund_code, jzrq, navs, dates=None):
+        """保存或更新基金的历史净值数据"""
+        return self._submit_task('save_history', fund_code, jzrq, navs, dates=dates)
+
     def delete_history(self, fund_code):
         """删除基金的历史数据"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM fund_history WHERE fund_code = ?', (fund_code,))
-            conn.commit()
-    
+        return self._submit_task('delete_history', fund_code)
+
     def clear_all(self):
         """清空所有历史数据"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM fund_history')
-            conn.commit()
-    
+        return self._submit_task('clear_all')
+
     def get_all_fund_codes(self):
         """获取数据库中所有基金代码"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT fund_code FROM fund_history')
-            return [row[0] for row in cursor.fetchall()]
+        return self._submit_task('get_all_fund_codes')
 
     def save_optimal_strategy(self, fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit):
         """保存或更新基金的最优策略参数寻优结果"""
-        import time
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            current_time = time.time()
-            cursor.execute('''
-                INSERT OR REPLACE INTO fund_optimal_strategy 
-                (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, current_time))
-            conn.commit()
+        return self._submit_task(
+            'save_optimal_strategy', fund_code, fund_name, buy_days, buy_drop, 
+            target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit
+        )
 
     def get_optimal_strategy(self, fund_code):
-        """获取基金的最优策略参数
-        返回: dict 或 None
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
-                FROM fund_optimal_strategy WHERE fund_code = ?
-            ''', (fund_code,))
-            row = cursor.fetchone()
-            if row:
-                return {
-                    'buy_days': row[0],
-                    'buy_drop': row[1],
-                    'target_profit': row[2],
-                    'hold_min': row[3],
-                    'hold_max': row[4],
-                    'win_rate': row[5],
-                    'total_trades': row[6],
-                    'avg_profit': row[7],
-                    'update_time': row[8] if len(row) > 8 else None
-                }
-            return None
+        """获取基金的最优策略参数"""
+        return self._submit_task('get_optimal_strategy', fund_code)
 
     def get_all_optimal_strategies(self):
-        """获取所有有最优策略参数的基金
-        返回: dict, {fund_code: {'buy_days': ..., 'fund_name': ...}}
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
-                FROM fund_optimal_strategy
-            ''')
-            rows = cursor.fetchall()
-            result = {}
-            for row in rows:
-                result[row[0]] = {
-                    'fund_name': row[1],
-                    'buy_days': row[2],
-                    'buy_drop': row[3],
-                    'target_profit': row[4],
-                    'hold_min': row[5],
-                    'hold_max': row[6],
-                    'win_rate': row[7],
-                    'total_trades': row[8],
-                    'avg_profit': row[9],
-                    'update_time': row[10] if len(row) > 10 else None
-                }
-            return result
+        """获取所有有最优策略参数的基金"""
+        return self._submit_task('get_all_optimal_strategies')
+
+    # ==================== 底层由 Worker 线程执行的同步实现 ====================
+
+    def _sync_get_history(self, conn, cursor, fund_code):
+        cursor.execute('''
+            SELECT jzrq, dwjz FROM fund_nav_detail 
+            WHERE fund_code = ? 
+            ORDER BY jzrq DESC
+        ''', (fund_code,))
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+            
+        dates = [row[0] for row in rows]
+        navs = [row[1] for row in rows]
+        latest_date = dates[0]
+        
+        return {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+
+    def _sync_save_history(self, conn, cursor, fund_code, jzrq, navs, dates=None):
+        if dates and len(dates) == len(navs):
+            # 新格式：批量写入 (fund_code, date, nav) 记录
+            records = [(fund_code, d, float(n)) for d, n in zip(dates, navs) if d and n is not None]
+            if records:
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO fund_nav_detail (fund_code, jzrq, dwjz)
+                    VALUES (?, ?, ?)
+                ''', records)
+        else:
+            # 容错：如果未提供日期，尝试以 jzrq 写入单条数据
+            if navs:
+                latest_nav = navs[0]
+                cursor.execute('''
+                    INSERT OR REPLACE INTO fund_nav_detail (fund_code, jzrq, dwjz)
+                    VALUES (?, ?, ?)
+                ''', (fund_code, jzrq, float(latest_nav)))
+                
+        current_time = time.time()
+        
+        # 更新基金主表中的最新日期和更新时间
+        cursor.execute('''
+            INSERT OR REPLACE INTO fund_history 
+            (fund_code, jzrq, update_time)
+            VALUES (?, ?, ?)
+        ''', (fund_code, jzrq, current_time))
+        conn.commit()
+
+    def _sync_delete_history(self, conn, cursor, fund_code):
+        cursor.execute('DELETE FROM fund_history WHERE fund_code = ?', (fund_code,))
+        cursor.execute('DELETE FROM fund_nav_detail WHERE fund_code = ?', (fund_code,))
+        conn.commit()
+
+    def _sync_clear_all(self, conn, cursor):
+        cursor.execute('DELETE FROM fund_history')
+        cursor.execute('DELETE FROM fund_nav_detail')
+        conn.commit()
+
+    def _sync_get_all_fund_codes(self, conn, cursor):
+        cursor.execute('SELECT fund_code FROM fund_history')
+        return [row[0] for row in cursor.fetchall()]
+
+    def _sync_save_optimal_strategy(self, conn, cursor, fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit):
+        current_time = time.time()
+        cursor.execute('''
+            INSERT OR REPLACE INTO fund_optimal_strategy 
+            (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, current_time))
+        conn.commit()
+
+    def _sync_get_optimal_strategy(self, conn, cursor, fund_code):
+        cursor.execute('''
+            SELECT buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
+            FROM fund_optimal_strategy WHERE fund_code = ?
+        ''', (fund_code,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                'buy_days': row[0],
+                'buy_drop': row[1],
+                'target_profit': row[2],
+                'hold_min': row[3],
+                'hold_max': row[4],
+                'win_rate': row[5],
+                'total_trades': row[6],
+                'avg_profit': row[7],
+                'update_time': row[8] if len(row) > 8 else None
+            }
+        return None
+
+    def _sync_get_all_optimal_strategies(self, conn, cursor):
+        cursor.execute('''
+            SELECT fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit, update_time 
+            FROM fund_optimal_strategy
+        ''')
+        rows = cursor.fetchall()
+        result = {}
+        for row in rows:
+            result[row[0]] = {
+                'fund_name': row[1],
+                'buy_days': row[2],
+                'buy_drop': row[3],
+                'target_profit': row[4],
+                'hold_min': row[5],
+                'hold_max': row[6],
+                'win_rate': row[7],
+                'total_trades': row[8],
+                'avg_profit': row[9],
+                'update_time': row[10] if len(row) > 10 else None
+            }
+        return result
