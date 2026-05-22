@@ -2,8 +2,9 @@ from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QLabel,
                                QGroupBox, QGridLayout, QCheckBox, QHBoxLayout, 
                                QPushButton, QMessageBox, QVBoxLayout, QWidget,
                                QTabWidget)
-from PySide6.QtGui import QPainter, QPolygonF, QPen, QColor, QFont, QLinearGradient
-from PySide6.QtCore import Qt, QRect, QPointF
+from PySide6.QtGui import QPainter, QPolygonF, QPen, QColor, QFont, QLinearGradient, QBrush, QGradient
+from PySide6.QtCore import Qt, QRect, QPointF, QPoint, QMargins
+from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
 import datetime
 
 class SettingsDialog(QDialog):
@@ -110,8 +111,200 @@ class SettingsDialog(QDialog):
         except Exception:
             QMessageBox.warning(self, "错误", "请输入正确的数字格式！")
 
+class InteractiveChartView(QChartView):
+    """量化交互式图表视图，提供硬件加速、框选放大、滚轮缩放、右键平移和自定义十字辅助线与 Tooltip"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRenderHint(QPainter.Antialiasing)
+        # 支持框选局部放大
+        self.setRubberBand(QChartView.RectangleRubberBand)
+        
+        # 缓存数据用于十字线绘制
+        self.current_dates = []
+        self.current_navs = []
+        self.current_pcts = []
+        self.axis_x = None
+        
+        self.mouse_pos = None
+        self.setMouseTracking(True)
+        
+        # 右键拖拽平移相关
+        self.is_dragging = False
+        self.last_mouse_pos = QPoint()
+        
+    def update_data(self, dates, navs, pcts, axis_x):
+        self.current_dates = dates
+        self.current_navs = navs
+        self.current_pcts = pcts
+        self.axis_x = axis_x
+        self.viewport().update()
+        
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self.is_dragging = True
+            self.last_mouse_pos = event.pos()
+            # 拖拽时临时更改鼠标光标为 SizeAll (十字移动) 样式以增强交互感受
+            self.setCursor(Qt.SizeAllCursor)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+            
+    def mouseMoveEvent(self, event):
+        self.mouse_pos = event.pos()
+        if self.is_dragging:
+            delta = event.pos() - self.last_mouse_pos
+            self.last_mouse_pos = event.pos()
+            
+            # 左右、上下拖动平移可视视口
+            self.chart().scroll(-delta.x(), delta.y())
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+        self.viewport().update()
+        
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self.is_dragging = False
+            self.setCursor(Qt.ArrowCursor) # 恢复默认光标
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+            
+    def leaveEvent(self, event):
+        self.mouse_pos = None
+        self.viewport().update()
+        super().leaveEvent(event)
+        
+    def wheelEvent(self, event):
+        # 滚轮缩放：滚动幅度 y() 正数放大，负数缩小
+        factor = 0.9 if event.angleDelta().y() > 0 else 1.1
+        self.chart().zoom(factor)
+        event.accept()
+        
+    def doubleClickEvent(self, event):
+        # 双击还原缩放
+        self.chart().zoomReset()
+        event.accept()
+        
+    def drawForeground(self, painter, rect):
+        # 1. 绘制自定义前景层
+        if not self.current_pcts or not self.current_dates:
+            return
+            
+        chart = self.chart()
+        plot_rect = chart.plotArea()
+        
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 2. 动态计算当前可见范围内的日期标签 (最多显示 5 个)
+        if self.axis_x:
+            x_min = max(0, int(self.axis_x.min() + 0.5))
+            x_max = min(len(self.current_dates) - 1, int(self.axis_x.max() + 0.5))
+            
+            if x_max > x_min:
+                painter.setPen(QColor("#7f8c8d"))
+                painter.setFont(QFont("Segoe UI", 8))
+                
+                num_ticks = min(5, x_max - x_min + 1)
+                for i in range(num_ticks):
+                    idx = int(x_min + i * (x_max - x_min) / (num_ticks - 1))
+                    pos_on_chart = chart.mapToPosition(QPointF(idx, 0))
+                    x = pos_on_chart.x()
+                    
+                    # 确保只在绘图视口左右边界内绘制
+                    if plot_rect.left() - 5 <= x <= plot_rect.right() + 5:
+                        date_str = self.current_dates[idx]
+                        tw = painter.fontMetrics().horizontalAdvance(date_str)
+                        painter.drawText(x - tw / 2, plot_rect.bottom() + 18, date_str)
+                        
+            # 3. 标注区间末尾最新点 (若在可见范围内)
+            last_idx = len(self.current_pcts) - 1
+            if self.axis_x.min() - 0.5 <= last_idx <= self.axis_x.max() + 0.5:
+                last_pct = self.current_pcts[-1]
+                pos_last = chart.mapToPosition(QPointF(last_idx, last_pct))
+                lx, ly = pos_last.x(), pos_last.y()
+                
+                if plot_rect.left() <= lx <= plot_rect.right() and plot_rect.top() <= ly <= plot_rect.bottom():
+                    # 绘制鲜亮小红点
+                    painter.setBrush(QColor("#e74c3c"))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawEllipse(QPointF(lx, ly), 4, 4)
+                    
+                    # 绘制最新百分比文字
+                    painter.setPen(QColor("#e74c3c"))
+                    painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                    val_str = f"{last_pct:+.2f}%"
+                    tw = painter.fontMetrics().horizontalAdvance(val_str)
+                    painter.drawText(lx - tw - 5, ly - 8, val_str)
+                    
+        # 4. 绘制十字线与悬浮 Tooltip 窗口
+        if self.mouse_pos:
+            scene_pos = self.mapToScene(self.mouse_pos)
+            if plot_rect.contains(scene_pos):
+                val = chart.mapToValue(scene_pos)
+                idx = int(val.x() + 0.5)
+                idx = max(0, min(len(self.current_pcts) - 1, idx))
+                
+                if self.axis_x and self.axis_x.min() - 0.5 <= idx <= self.axis_x.max() + 0.5:
+                    pct = self.current_pcts[idx]
+                    pos_in_chart = chart.mapToPosition(QPointF(idx, pct))
+                    px, py = pos_in_chart.x(), pos_in_chart.y()
+                    
+                    # A. 绘制水平和垂直十字辅助线
+                    painter.setPen(QPen(QColor("#7f8c8d"), 1, Qt.DashLine))
+                    painter.drawLine(px, plot_rect.top(), px, plot_rect.bottom())
+                    painter.drawLine(plot_rect.left(), py, plot_rect.right(), py)
+                    
+                    # B. 交点圆点高亮
+                    painter.setBrush(QColor("#0097e6"))
+                    painter.setPen(QPen(Qt.white, 2))
+                    painter.drawEllipse(QPointF(px, py), 5, 5)
+                    
+                    # C. 浮窗 Tooltip 信息
+                    tip_date = self.current_dates[idx]
+                    v_curr = self.current_navs[idx]
+                    
+                    # 计算当前区间内最高和最低净值的差距
+                    max_nav = max(self.current_navs)
+                    min_nav = min(self.current_navs)
+                    dist_high = (v_curr - max_nav) / max_nav * 100 if max_nav != 0 else 0
+                    dist_low = (v_curr - min_nav) / min_nav * 100 if min_nav != 0 else 0
+                    
+                    tip_text = f"日期: {tip_date}\n净值: {v_curr:.4f}\n区间涨跌: {pct:+.2f}%\n距最高: {dist_high:+.2f}%\n距最低: {dist_low:+.2f}%"
+                    
+                    painter.setFont(QFont("Segoe UI", 9))
+                    fm = painter.fontMetrics()
+                    text_rect = fm.boundingRect(QRect(0, 0, 220, 120), Qt.AlignLeft, tip_text)
+                    tip_w = text_rect.width() + 20
+                    tip_h = text_rect.height() + 15
+                    
+                    # 悬停位置微调
+                    tx = px + 15
+                    ty = py - tip_h - 15
+                    if tx + tip_w > plot_rect.right():
+                        tx = px - tip_w - 15
+                    if ty < plot_rect.top():
+                        ty = py + 15
+                        
+                    tip_rect = QRect(tx, ty, tip_w, tip_h)
+                    
+                    # 磨砂半透明深色背景
+                    painter.setBrush(QColor(45, 52, 71, 220))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawRoundedRect(tip_rect, 5, 5)
+                    
+                    # 文本白字输出
+                    painter.setPen(Qt.white)
+                    painter.drawText(tip_rect.adjusted(10, 5, -10, -5), Qt.AlignLeft | Qt.AlignVCenter, tip_text)
+        
+        painter.restore()
+
+
 class FundChartDialog(QDialog):
     """基金走势图详情弹窗"""
+    
     def __init__(self, code, name, history_data, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"走势详情: {name} ({code})")
@@ -129,6 +322,7 @@ class FundChartDialog(QDialog):
         self.name = name
         self.current_navs = []
         self.current_dates = []
+        self.current_pcts = []
         
         layout = QVBoxLayout(self)
         
@@ -170,17 +364,64 @@ class FundChartDialog(QDialog):
         self.stats_label.setStyleSheet("color: #7f8c8d; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(self.stats_label)
         
-        # 图表区域
-        self.chart_widget = QWidget()
-        self.chart_widget.setMinimumHeight(350)
-        self.chart_widget.setStyleSheet("background-color: white; border: 1px solid #f1f2f6; border-radius: 4px;")
-        layout.addWidget(self.chart_widget)
+        # 专业交互式 QChartView 图表区域
+        self.chart_view = InteractiveChartView(self)
+        self.chart_view.setMinimumHeight(350)
+        self.chart_view.setStyleSheet("background-color: white; border: 1px solid #f1f2f6; border-radius: 4px;")
+        layout.addWidget(self.chart_view)
         
-        # 开启鼠标追踪及事件，用于显示十字辅助线和 Tooltip
-        self.chart_widget.setMouseTracking(True)
-        self.mouse_pos = None
-        self.chart_widget.mouseMoveEvent = self.chart_mouse_move
-        self.chart_widget.leaveEvent = self.chart_mouse_leave
+        # 创建 QChart 并进行视觉美化
+        self.chart = QChart()
+        self.chart.legend().hide()
+        self.chart.setMargins(QMargins(10, 10, 10, 10))
+        self.chart.setBackgroundRoundness(0)
+        self.chart.setBackgroundVisible(False) # 使其应用 chart_view 的样式背景色
+        
+        # 走势折线系列
+        self.line_series = QLineSeries()
+        pen = QPen(QColor("#0097e6"), 2)
+        self.line_series.setPen(pen)
+        
+        # 面积系列，用于渐变半透明阴影填充
+        self.area_upper_series = QLineSeries()
+        self.area_lower_series = QLineSeries()
+        self.area_series = QAreaSeries(self.area_upper_series, self.area_lower_series)
+        
+        # 设置渐变填充 Brush
+        gradient = QLinearGradient(0, 0, 0, 1)
+        gradient.setCoordinateMode(QGradient.ObjectMode)
+        gradient.setColorAt(0, QColor(0, 151, 230, 75)) # 顶部青蓝色，带75/255透明度
+        gradient.setColorAt(1, QColor(0, 151, 230, 2))  # 底部接近完全透明
+        self.area_series.setBrush(QBrush(gradient))
+        self.area_series.setPen(Qt.NoPen)
+        
+        self.chart.addSeries(self.area_series)
+        self.chart.addSeries(self.line_series)
+        
+        # 创建轴
+        self.axis_x = QValueAxis()
+        self.axis_x.setLabelsVisible(False) # 隐藏原生刻度标签，交由视图绘制日期
+        self.axis_x.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
+        self.axis_x.setLinePenColor(QColor("#dcdde1"))
+        
+        self.axis_y = QValueAxis()
+        self.axis_y.setLabelFormat("%.2f%%")
+        self.axis_y.setLabelsColor(QColor("#7f8c8d"))
+        self.axis_y.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
+        self.axis_y.setLinePenColor(QColor("#dcdde1"))
+        
+        self.chart.addAxis(self.axis_x, Qt.AlignBottom)
+        self.chart.addAxis(self.axis_y, Qt.AlignLeft)
+        
+        self.line_series.attachAxis(self.axis_x)
+        self.line_series.attachAxis(self.axis_y)
+        self.area_series.attachAxis(self.axis_x)
+        self.area_series.attachAxis(self.axis_y)
+        
+        self.chart_view.setChart(self.chart)
+        
+        # 绑定 X 轴范围改变信号，实现 Y 轴实时视口自适应
+        self.axis_x.rangeChanged.connect(self.handle_x_range_changed)
         
         # 底部按钮
         btn_layout = QHBoxLayout()
@@ -194,25 +435,15 @@ class FundChartDialog(QDialog):
         # 默认选中“近1年”或可用最大范围
         default_p = "近1年" if len(self.all_navs) >= 252 else "全部"
         if default_p not in self.btns: default_p = "全部"
+        
         self.change_period(default_p, periods[3][1] if default_p == "近1年" else 0)
         
-        # 重写 chart_widget 的 paintEvent
-        self.chart_widget.paintEvent = self.paint_chart
-
-    def chart_mouse_move(self, event):
-        self.mouse_pos = event.pos()
-        self.chart_widget.update()
-
-    def chart_mouse_leave(self, event):
-        self.mouse_pos = None
-        self.chart_widget.update()
-
     def change_period(self, period_text, days):
-        # 更新按钮状态
+        # 更新按钮高亮状态
         for text, btn in self.btns.items():
             btn.setChecked(text == period_text)
             
-        # 切片数据
+        # 对数据进行时间切片
         if period_text == "今年以来":
             this_year = str(datetime.datetime.now().year)
             start_idx = -1
@@ -233,184 +464,73 @@ class FundChartDialog(QDialog):
             self.current_navs = self.all_navs[-days:]
             self.current_dates = self.all_dates[-days:]
             
-        # 计算涨跌幅
+        # 计算区间累计涨跌幅，更新 stats_label 标签
         if len(self.current_navs) > 1:
             start_v = self.current_navs[0]
             end_v = self.current_navs[-1]
             total_change = (end_v - start_v) / start_v * 100 if start_v != 0 else 0
-            self.stats_label.setText(f"统计周期: {self.current_dates[0]} 至 {self.current_dates[-1]} ({len(self.current_navs)}个交易日) | 区间涨跌: <span style='color:{'#e74c3c' if total_change>=0 else '#27ae60'}'>{total_change:+.2f}%</span>")
+            self.stats_label.setText(
+                f"统计周期: {self.current_dates[0]} 至 {self.current_dates[-1]} ({len(self.current_navs)}个交易日) | "
+                f"区间涨跌: <span style='color:{'#e74c3c' if total_change>=0 else '#27ae60'}'>{total_change:+.2f}%</span>"
+            )
         else:
             self.stats_label.setText(f"统计周期: {self.current_dates[0] if self.current_dates else '-'} | 暂无足够对比数据")
             
-        self.chart_widget.update()
-
-    def paint_chart(self, event):
-        if not self.current_navs:
+        # 重新计算以首日为0%的百分比走势数据
+        start_nav = self.current_navs[0] if self.current_navs else 1.0
+        self.current_pcts = [(nav - start_nav) / start_nav * 100 for nav in self.current_navs]
+        
+        # 更新图表内容
+        self.update_chart_data()
+        
+    def update_chart_data(self):
+        if not self.current_pcts:
             return
             
-        painter = QPainter(self.chart_widget)
-        painter.setRenderHint(QPainter.Antialiasing)
+        # 清空原有折线和面积数据
+        self.line_series.clear()
+        self.area_upper_series.clear()
+        self.area_lower_series.clear()
         
-        rect = self.chart_widget.rect()
-        padding_l, padding_r, padding_t, padding_b = 60, 40, 40, 40
-        chart_rect = rect.adjusted(padding_l, padding_t, -padding_r, -padding_b)
+        min_pct = min(self.current_pcts)
         
-        # 画背景网格
-        painter.setPen(QPen(QColor("#f1f2f6"), 1))
-        for i in range(5):
-            y = chart_rect.top() + i * chart_rect.height() / 4
-            painter.drawLine(chart_rect.left(), y, chart_rect.right(), y)
-        
-        # 画坐标轴
-        painter.setPen(QPen(QColor("#dcdde1"), 1))
-        painter.drawLine(chart_rect.bottomLeft(), chart_rect.bottomRight())
-        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())
-        
-        # 转换数据为百分比 (以所选区间的第一天作为 0%)
-        start_nav = self.current_navs[0] if self.current_navs else 1.0
-        current_pcts = [(nav - start_nav) / start_nav * 100 for nav in self.current_navs]
-        
-        # 计算百分比极值与数值极值
-        max_pct = max(current_pcts) if current_pcts else 0
-        min_pct = min(current_pcts) if current_pcts else 0
-        max_nav = max(self.current_navs) if self.current_navs else 1.0
-        min_nav = min(self.current_navs) if self.current_navs else 1.0
-        range_pct = max_pct - min_pct if max_pct != min_pct else 1.0
-        
-        # 留白 15%
-        margin_val = range_pct * 0.15 if range_pct > 0 else 1.0
-        if margin_val < 0.5: margin_val = 0.5
-        
-        max_pct_disp = max_pct + margin_val
-        min_pct_disp = min_pct - margin_val
-        range_disp = max_pct_disp - min_pct_disp
-        
-        # 画点
-        points = QPolygonF()
-        x_step = chart_rect.width() / (len(current_pcts) - 1) if len(current_pcts) > 1 else 0
-        
-        for i, pct in enumerate(current_pcts):
-            x = chart_rect.left() + i * x_step
-            y = chart_rect.bottom() - (pct - min_pct_disp) / range_disp * chart_rect.height()
-            points.append(QPointF(x, y))
+        # 塞入切片后的新点
+        for i, pct in enumerate(self.current_pcts):
+            self.line_series.append(i, pct)
+            self.area_upper_series.append(i, pct)
+            self.area_lower_series.append(i, min_pct - 2.0) # 下拉下限以实现全填充
             
-        # 画零基准线 (如果跨越了0)
-        if min_pct_disp < 0 < max_pct_disp:
-            zero_y = chart_rect.bottom() - (0 - min_pct_disp) / range_disp * chart_rect.height()
-            painter.setPen(QPen(QColor("#bdc3c7"), 1, Qt.DashLine))
-            painter.drawLine(chart_rect.left(), zero_y, chart_rect.right(), zero_y)
+        # 将数据更新到可视视图缓存中，供 QPainter 日期与十字线绘制
+        self.chart_view.update_data(self.current_dates, self.current_navs, self.current_pcts, self.axis_x)
+        
+        # 重置 X 轴默认可视范围 [0, N-1]。重置时临时阻断信号，避免触发中间过度计算
+        self.axis_x.blockSignals(True)
+        self.axis_x.setRange(0, max(1, len(self.current_dates) - 1))
+        self.axis_x.blockSignals(False)
+        
+        # 触发一次 Y 轴的自适应高度计算
+        self.handle_x_range_changed(0, len(self.current_dates) - 1)
+        
+    def handle_x_range_changed(self, min_val, max_val):
+        """X轴范围改变槽函数，实时自适应视口内的 Y 轴高度范围"""
+        if not hasattr(self, 'current_pcts') or not self.current_pcts:
+            return
             
-        # 画填充阴影 (渐变效果)
-        gradient = QLinearGradient(0, chart_rect.top(), 0, chart_rect.bottom())
-        gradient.setColorAt(0, QColor(0, 151, 230, 60))
-        gradient.setColorAt(1, QColor(0, 151, 230, 5))
+        x_min = max(0, int(min_val + 0.5))
+        x_max = min(len(self.current_pcts) - 1, int(max_val + 0.5))
         
-        shadow_points = QPolygonF(points)
-        shadow_points.append(QPointF(chart_rect.right() if len(points)>1 else points[0].x(), chart_rect.bottom()))
-        shadow_points.append(QPointF(chart_rect.left(), chart_rect.bottom()))
-        painter.setBrush(gradient)
-        painter.setPen(Qt.NoPen)
-        painter.drawPolygon(shadow_points)
-        
-        # 画折线
-        painter.setPen(QPen(QColor("#0097e6"), 2))
-        if len(points) > 1:
-            painter.drawPolyline(points)
-        else:
-            painter.drawEllipse(points[0], 2, 2)
-        
-        # 画刻度文本
-        painter.setPen(QColor("#7f8c8d"))
-        painter.setFont(QFont("Segoe UI", 8))
-        
-        # Y轴刻度 (百分比)
-        for i in range(5):
-            y_val = max_pct_disp - i * range_disp / 4
-            y_pos = chart_rect.top() + i * chart_rect.height() / 4
-            painter.drawText(chart_rect.left() - 55, y_pos + 5, f"{y_val:+.2f}%")
-            
-        # X轴刻度 (日期) - 均匀显示 5 个日期
-        if len(self.current_dates) >= 2:
-            num_ticks = min(5, len(self.current_dates))
-            for i in range(num_ticks):
-                idx = int(i * (len(self.current_dates) - 1) / (num_ticks - 1))
-                x = chart_rect.left() + idx * x_step
-                date_str = self.current_dates[idx]
-                # 动态计算文字宽度以实现精准居中
-                tw = painter.fontMetrics().horizontalAdvance(date_str)
-                painter.drawText(x - tw / 2, chart_rect.bottom() + 22, date_str)
-        
-        # 标注最新值
-        if points:
-            last_p = points[-1]
-            painter.setBrush(QColor("#e74c3c"))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(last_p, 4, 4)
-            painter.setPen(QColor("#e74c3c"))
-            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            painter.drawText(last_p.x() - 60, last_p.y() - 15, f"{current_pcts[-1]:+.2f}%")
-
-        # --- 增加辅助线与浮窗 (Tooltip) ---
-        if self.mouse_pos and len(self.current_navs) > 1:
-            mx, my = self.mouse_pos.x(), self.mouse_pos.y()
-            if chart_rect.contains(mx, my):
-                # 找到最接近的数据索引
-                idx = int((mx - chart_rect.left()) / x_step + 0.5)
-                idx = max(0, min(len(self.current_navs) - 1, idx))
+        if x_max >= x_min:
+            visible_pcts = self.current_pcts[x_min: x_max + 1]
+            if visible_pcts:
+                min_pct = min(visible_pcts)
+                max_pct = max(visible_pcts)
                 
-                # 数据点实际坐标
-                data_point = points[idx]
-                px, py = data_point.x(), data_point.y()
+                range_pct = max_pct - min_pct if max_pct != min_pct else 1.0
+                margin_val = range_pct * 0.15 if range_pct > 0 else 1.0
+                if margin_val < 0.5: margin_val = 0.5
                 
-                # 1. 画垂直和水平辅助线
-                painter.setPen(QPen(QColor("#7f8c8d"), 1, Qt.DashLine))
-                painter.drawLine(px, chart_rect.top(), px, chart_rect.bottom())
-                painter.drawLine(chart_rect.left(), py, chart_rect.right(), py)
-                
-                # 2. 高亮当前交点
-                painter.setBrush(QColor("#0097e6"))
-                painter.setPen(QPen(Qt.white, 2))
-                painter.drawEllipse(data_point, 5, 5)
-                
-                # 3. 绘制浮窗
-                tip_date = self.current_dates[idx]
-                tip_pct = current_pcts[idx]
-                
-                # 计算与期间最高/最低的差距
-                v_curr = self.current_navs[idx]
-                dist_high = (v_curr - max_nav) / max_nav * 100 if max_nav != 0 else 0
-                dist_low = (v_curr - min_nav) / min_nav * 100 if min_nav != 0 else 0
-                
-                tip_text = f"日期: {tip_date}\n涨跌: {tip_pct:+.2f}%\n距最高: {dist_high:+.2f}%\n距最低: {dist_low:+.2f}%"
-                
-                # 计算文字尺寸以确定浮窗大小
-                painter.setFont(QFont("Segoe UI", 9))
-                fm = painter.fontMetrics()
-                # 稍微多留点边距
-                text_rect = fm.boundingRect(QRect(0, 0, 220, 120), Qt.AlignLeft, tip_text)
-                tip_w = text_rect.width() + 20
-                tip_h = text_rect.height() + 15
-                
-                # 确定浮窗位置 (尽量不遮挡鼠标和数据点)
-                tx = px + 15
-                ty = py - tip_h - 15
-                
-                # 边界检查，防止浮窗超出图表区域
-                if tx + tip_w > chart_rect.right() + padding_r:
-                    tx = px - tip_w - 15
-                if ty < chart_rect.top() - 20:
-                    ty = py + 15
-                    
-                tip_rect = QRect(tx, ty, tip_w, tip_h)
-                
-                # 绘制半透明背景
-                painter.setBrush(QColor(45, 52, 71, 220)) 
-                painter.setPen(Qt.NoPen)
-                painter.drawRoundedRect(tip_rect, 5, 5)
-                
-                # 绘制文字
-                painter.setPen(Qt.white)
-                painter.drawText(tip_rect.adjusted(10, 5, -10, -5), Qt.AlignLeft | Qt.AlignVCenter, tip_text)
+                # 更新 Y 轴自适应范围
+                self.axis_y.setRange(min_pct - margin_val, max_pct + margin_val)
 
 
 class StrategyNotificationToast(QWidget):

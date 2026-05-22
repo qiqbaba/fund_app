@@ -242,10 +242,6 @@
             "name": "国泰中证动漫游戏ETF联接C",
             "sector": "游戏"
         },
-        "004753": {
-            "name": "广发中证传媒ETF联接C",
-            "sector": "传媒"
-        },
         "025857": {
             "name": "华夏中证电网设备主题ETF发起式联接C",
             "sector": "电力"
@@ -286,10 +282,6 @@
             "name": "华安黄金ETF联接C",
             "sector": "黄金"
         },
-        "020515": {
-            "name": "华泰柏瑞东南亚科技ETF发起式联接(QDII)A",
-            "sector": "东南亚科技"
-        },
         "014345": {
             "name": "鹏华中证500指数增强C",
             "sector": "中证500"
@@ -317,7 +309,7 @@
             "is_held": false,
             "amount": "",
             "yield_rate": "",
-            "is_special": false
+            "is_special": true
         },
         "014674": {
             "name": "富国中证港股通互联网ETF发起式联接C",
@@ -340,6 +332,21 @@
             "is_held": false,
             "amount": "",
             "yield_rate": ""
+        },
+        "015675": {
+            "name": "鹏华中证传媒指数(LOF)C",
+            "sector": "传媒",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": ""
+        },
+        "023379": {
+            "name": "鹏华中证800证券保险指数(LOF)I",
+            "sector": "证券",
+            "is_held": false,
+            "amount": "",
+            "yield_rate": "",
+            "is_special": false
         }
     },
     "drop_days": [
