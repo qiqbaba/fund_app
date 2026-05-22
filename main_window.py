@@ -22,6 +22,16 @@ from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget,
                          HoldingInputWidget, ActionButtonWidget, FundFilterProxyModel)
 from utils import extract_fund_sector
 
+# 引入新拆分的 Tab 页模块组件
+from special_attention_tab import SpecialAttentionTab
+from my_funds_tab import MyFundsTab
+from ranking_tab import RankingTab
+from valuation_tab import ValuationTab
+from cycle_board_tab import CycleBoardTab
+from other_funds_tab import OtherFundsTab
+from strategy_center_tab import StrategyCenterTab
+
+
 CYCLE_FUNDS = [
     {
         "code": "014414",
@@ -196,200 +206,57 @@ class FundApp(QMainWindow):
 
         self.tabs = QTabWidget()
         
-        # Tab 0: 特别关注
-        self.tab0 = QWidget()
-        layout0 = QVBoxLayout(self.tab0)
-        layout0.setContentsMargins(0, 0, 0, 0)
+        # 实例化各个拆分后的 Tab 页面
+        self.special_tab = SpecialAttentionTab(self)
+        self.my_funds_tab = MyFundsTab(self)
+        self.ranking_tab = RankingTab(self)
+        self.valuation_tab = ValuationTab(self)
+        self.cycle_tab = CycleBoardTab(self)
+        self.other_tab = OtherFundsTab(self)
+        self.strategy_tab = StrategyCenterTab(self.get_fund_lists, self.history_cache, self.db, self)
         
-        filter_layout0 = QHBoxLayout()
-        filter_layout0.setContentsMargins(5, 5, 5, 5)
-        self.filter_input0 = QLineEdit()
-        self.filter_input0.setPlaceholderText("🔍 在特别关注中搜索 (名称/代码)...")
-        self.filter_input0.setClearButtonEnabled(True)
-        self.filter_input0.setFixedHeight(30)
-        self.filter_input0.textChanged.connect(lambda text: self.proxy0.setFilterText(text) if hasattr(self, 'proxy0') and self.proxy0 else None)
-        filter_layout0.addWidget(self.filter_input0)
-        layout0.addLayout(filter_layout0)
+        # 兼容性挂载表格变量引用，使得其他地方直接调用如 self.table0 依旧畅通无阻
+        self.table0 = self.special_tab.table
+        self.table1 = self.my_funds_tab.table
+        self.table2 = self.ranking_tab.table
+        self.table3 = self.valuation_tab.table
+        self.table_cycle = self.cycle_tab.table
+        self.table_other = self.other_tab.table
         
-        self.table0 = QTableView()
-        self.table0.setAlternatingRowColors(True)
-        self.table0.verticalHeader().setVisible(False)
-        self.table0.setSelectionBehavior(QTableView.SelectRows)
-        self.table0.setSelectionMode(QTableView.SingleSelection)
-        self.table0.setMouseTracking(True)
-        layout0.addWidget(self.table0)
+        self.tab0 = self.special_tab
+        self.tab1 = self.my_funds_tab
+        self.tab2 = self.ranking_tab
+        self.tab3 = self.valuation_tab
+        self.tab_cycle = self.cycle_tab
+        self.tab_other = self.other_tab
+        self.tab4 = self.strategy_tab
+        self.backtest_widget = self.strategy_tab.backtest_widget
         
-        # Tab 1: 我的自选基金
-        self.tab1 = QWidget()
-        layout1 = QVBoxLayout(self.tab1)
-        layout1.setContentsMargins(0, 0, 0, 0)
-        
-        filter_layout1 = QHBoxLayout()
-        filter_layout1.setContentsMargins(5, 5, 5, 5)
-        self.filter_input1 = QLineEdit()
-        self.filter_input1.setPlaceholderText("🔍 在自选基金中搜索 (名称/代码)...")
-        self.filter_input1.setClearButtonEnabled(True)
-        self.filter_input1.setFixedHeight(30)
-        self.filter_input1.textChanged.connect(lambda text: self.proxy1.setFilterText(text) if hasattr(self, 'proxy1') and self.proxy1 else None)
-        filter_layout1.addWidget(self.filter_input1)
-        layout1.addLayout(filter_layout1)
-        
-        self.table1 = QTableView()
-        self.table1.setAlternatingRowColors(True)
-        self.table1.verticalHeader().setVisible(False)
-        self.table1.setSelectionBehavior(QTableView.SelectRows)
-        self.table1.setSelectionMode(QTableView.SingleSelection)
-        self.table1.setMouseTracking(True)
-        layout1.addWidget(self.table1)
-        
-        # Tab 2: 排行榜
-        self.tab2 = QWidget()
-        layout2 = QVBoxLayout(self.tab2)
-        layout2.setContentsMargins(0, 0, 0, 0)
-        
-        filter_layout2 = QHBoxLayout()
-        filter_layout2.setContentsMargins(5, 5, 5, 5)
-        self.filter_input2 = QLineEdit()
-        self.filter_input2.setPlaceholderText("🔍 在排行榜中搜索 (名称/代码)...")
-        self.filter_input2.setClearButtonEnabled(True)
-        self.filter_input2.setFixedHeight(30)
-        self.filter_input2.textChanged.connect(lambda text: self.proxy2.setFilterText(text) if hasattr(self, 'proxy2') and self.proxy2 else None)
-        filter_layout2.addWidget(self.filter_input2)
-        layout2.addLayout(filter_layout2)
-        
-        self.table2 = QTableView()
-        self.table2.setAlternatingRowColors(True)
-        self.table2.verticalHeader().setVisible(False)
-        self.table2.setSelectionBehavior(QTableView.SelectRows)
-        self.table2.setSelectionMode(QTableView.SingleSelection)
-        self.table2.setMouseTracking(True)
-        layout2.addWidget(self.table2)
-        
-        # Tab 3: 估值榜
-        self.tab3 = QWidget()
-        layout3 = QVBoxLayout(self.tab3)
-        layout3.setContentsMargins(0, 0, 0, 0)
-        
-        filter_layout3 = QHBoxLayout()
-        filter_layout3.setContentsMargins(5, 5, 5, 5)
-        self.filter_input3 = QLineEdit()
-        self.filter_input3.setPlaceholderText("🔍 在估值榜中搜索 (名称/代码)...")
-        self.filter_input3.setClearButtonEnabled(True)
-        self.filter_input3.setFixedHeight(30)
-        self.filter_input3.textChanged.connect(lambda text: self.proxy3.setFilterText(text) if hasattr(self, 'proxy3') and self.proxy3 else None)
-        filter_layout3.addWidget(self.filter_input3)
-        layout3.addLayout(filter_layout3)
-        
-        self.table3 = QTableView()
-        self.table3.setAlternatingRowColors(True)
-        self.table3.verticalHeader().setVisible(False)
-        self.table3.setSelectionBehavior(QTableView.SelectRows)
-        self.table3.setSelectionMode(QTableView.SingleSelection)
-        self.table3.setMouseTracking(True)
-        layout3.addWidget(self.table3)
-        
-        # Tab 周期榜
-        self.tab_cycle = QWidget()
-        layout_cycle = QVBoxLayout(self.tab_cycle)
-        layout_cycle.setContentsMargins(0, 0, 0, 0)
-        
-        filter_layout_cycle = QHBoxLayout()
-        filter_layout_cycle.setContentsMargins(5, 5, 5, 5)
-        self.filter_input_cycle = QLineEdit()
-        self.filter_input_cycle.setPlaceholderText("🔍 在周期榜中搜索 (名称/代码/板块)...")
-        self.filter_input_cycle.setClearButtonEnabled(True)
-        self.filter_input_cycle.setFixedHeight(30)
-        self.filter_input_cycle.textChanged.connect(lambda text: self.proxy_cycle.setFilterText(text) if hasattr(self, 'proxy_cycle') and self.proxy_cycle else None)
-        filter_layout_cycle.addWidget(self.filter_input_cycle)
-        layout_cycle.addLayout(filter_layout_cycle)
-        
-        self.table_cycle = QTableView()
-        self.table_cycle.setAlternatingRowColors(True)
-        self.table_cycle.verticalHeader().setVisible(False)
-        self.table_cycle.setSelectionBehavior(QTableView.SelectRows)
-        self.table_cycle.setSelectionMode(QTableView.SingleSelection)
-        self.table_cycle.setMouseTracking(True)
-        layout_cycle.addWidget(self.table_cycle)
+        # 批量绑定子 Tab 的高级事件信号到 Controller (FundApp) 的对应业务函数
+        for tab in [self.special_tab, self.my_funds_tab, self.ranking_tab, self.valuation_tab, self.cycle_tab, self.other_tab]:
+            tab.delete_fund_signal.connect(self.delete_fund)
+            tab.add_fund_signal.connect(self.add_from_market)
+            tab.toggle_pin_signal.connect(self.toggle_pin_fund)
+            tab.toggle_special_signal.connect(self.toggle_special_fund)
+            tab.show_chart_signal.connect(self.show_detailed_chart_by_code)
+            tab.show_backtest_signal.connect(self.show_backtest_dialog)
 
-        # Tab 4: 其他(已有数据)
-        self.tab_other = QWidget()
-        layout_other = QVBoxLayout(self.tab_other)
-        layout_other.setContentsMargins(0, 0, 0, 0)
-        self.table_other = QTableView()
-        self.table_other.setAlternatingRowColors(True)
-        self.table_other.verticalHeader().setVisible(False)
-        self.table_other.setSelectionBehavior(QTableView.SelectRows)
-        self.table_other.setSelectionMode(QTableView.SingleSelection)
-        self.table_other.setMouseTracking(True)
-        layout_other.addWidget(self.table_other)
-        
-        # Tab 5: 策略中心
-        self.tab4 = QWidget()
-        layout4 = QHBoxLayout(self.tab4)
-        
-        self.strategy_list = QListWidget()
-        self.strategy_list.setFixedWidth(150)
-        self.strategy_list.addItem("📉 抄底止盈回测")
-        self.strategy_list.addItem("（待添加策略）")
-        
-        self.strategy_stack = QStackedWidget()
-        
-        from batch_backtest_dialog import BatchBacktestWidget
-        self.backtest_widget = BatchBacktestWidget(self.get_fund_lists, self.history_cache, self.db, self)
-        empty_widget = QWidget()
-        
-        self.strategy_stack.addWidget(self.backtest_widget)
-        self.strategy_stack.addWidget(empty_widget)
-        
-        self.strategy_list.currentRowChanged.connect(self.strategy_stack.setCurrentIndex)
-        
-        layout4.addWidget(self.strategy_list)
-        layout4.addWidget(self.strategy_stack)
-        
-        self.tabs.addTab(self.tab0, "🔥 特别关注")
-        self.tabs.addTab(self.tab1, "⭐ 我的自选基金")
-        self.tabs.addTab(self.tab2, "📈 今日指数ETF独立涨跌榜")
+        # 添加到 Tab 容器中
+        self.tabs.addTab(self.special_tab, "🔥 特别关注")
+        self.tabs.addTab(self.my_funds_tab, "⭐ 我的自选基金")
+        self.tabs.addTab(self.ranking_tab, "📈 今日指数ETF独立涨跌榜")
         self.tabs.setTabToolTip(2, "已过滤同质化")
-        self.tabs.addTab(self.tab3, "💎 估值榜")
+        self.tabs.addTab(self.valuation_tab, "💎 估值榜")
         self.tabs.setTabToolTip(3, "PE/PB 最高最低")
-        self.tabs.addTab(self.tab_cycle, "📅 周期参考榜")
-        self.tabs.addTab(self.tab_other, "📦 其他(已有数据)")
-        self.tabs.addTab(self.tab4, "💡 策略中心")
+        self.tabs.addTab(self.cycle_tab, "📅 周期参考榜")
+        self.tabs.addTab(self.other_tab, "📦 其他(已有数据)")
+        self.tabs.addTab(self.strategy_tab, "💡 策略中心")
         
         layout.addWidget(self.tabs)
 
-        # 绑定点击和双击事件
-        self.table0.clicked.connect(lambda index: self.on_table_clicked(self.table0, index))
-        self.table1.clicked.connect(lambda index: self.on_table_clicked(self.table1, index))
-        self.table2.clicked.connect(lambda index: self.on_table_clicked(self.table2, index))
-        self.table3.clicked.connect(lambda index: self.on_table_clicked(self.table3, index))
-        self.table_cycle.clicked.connect(lambda index: self.on_table_clicked(self.table_cycle, index))
-        
-        self.table0.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table0, index))
-        self.table1.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table1, index))
-        self.table2.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table2, index))
-        self.table3.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table3, index))
-        self.table_cycle.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table_cycle, index))
-        self.table_other.clicked.connect(lambda index: self.on_table_clicked(self.table_other, index))
-        self.table_other.doubleClicked.connect(lambda index: self.on_table_double_clicked(self.table_other, index))
-
-        # 右键菜单
-        self.table0.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table0.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table0, pos))
-        self.table1.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table1.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table1, pos))
-        self.table2.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table2.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table2, pos))
-        self.table3.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table3.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table3, pos))
-        self.table_cycle.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table_cycle.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table_cycle, pos))
-        self.table_other.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table_other.customContextMenuRequested.connect(lambda pos: self.show_context_menu(self.table_other, pos))
-
         self.apply_styles()
         
-        # 初始化表格模型和代理 - 将在 rebuild_table_headers 中设置
+        # 初始化表格模型和代理 - 将在 rebuild_table_headers 中设置与映射
         self.model0 = None
         self.model1 = None
         self.model2 = None
@@ -410,6 +277,7 @@ class FundApp(QMainWindow):
         self.proxy_cycle = None
         
         self.rebuild_table_headers()
+
 
     def rebuild_table_headers(self):
         self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "最优参数", "持有金额/\n收益率", 
@@ -459,118 +327,37 @@ class FundApp(QMainWindow):
             self.config["hidden_columns"] = hidden_cols_config
             self.need_config_save = True
         
-        # 创建模型和代理
-        for table, table_type in [(self.table0, "special"), (self.table1, "my_fund"), 
-                                  (self.table2, "ranking"), (self.table3, "valuation"), 
-                                  (self.table_cycle, "cycle"), (self.table_other, "other")]:
-            if table_type == "valuation":
-                table_headers = self.val_headers
-            elif table_type == "cycle":
-                table_headers = self.cycle_headers
-            else:
-                table_headers = self.headers
-                
-            model = FundTableModel(table_headers, parent=self)
-            delegate = FundTableDelegate(table_type=table_type, parent=self)
-            
-            # 为了避免 Qt 在 setModel 时触发旧列的错误排序，先禁用排序
-            table.setSortingEnabled(False)
-            
-            # 使用代理模型 support 过滤
-            if table_type in ["special", "my_fund", "ranking", "valuation", "cycle"]:
-                proxy = FundFilterProxyModel(self)
-                proxy.setSourceModel(model)
-                table.setModel(proxy)
-            else:
-                proxy = None
-                table.setModel(model)
-                
-            table.setItemDelegate(delegate)
-            
-            # 启用排序 (在代理模型上排序)
-            table.setSortingEnabled(True)
-            
-            # 配置列
-            header_view = table.horizontalHeader()
-            header_view.setSectionResizeMode(QHeaderView.Interactive)
-            header_view.setDefaultSectionSize(75)
-            header_view.setStyleSheet("QHeaderView::section { padding: 2px; }")
-            
-            # 减小行高，提高信息密度
-            table.verticalHeader().setDefaultSectionSize(38)
-            
-            # 设置列宽
-            if table_type == "cycle":
-                table.setColumnWidth(0, 25)   # 序号
-                table.setColumnWidth(1, 85)   # 周期板块
-                table.setColumnWidth(2, 160)  # 周期当前位置
-                table.setColumnWidth(3, 70)   # 关联基金代码
-                table.setColumnWidth(4, 160)  # 关联基金名称
-                table.setColumnWidth(5, 75)   # 昨日净值
-                table.setColumnWidth(6, 80)   # 净值日期
-                table.setColumnWidth(7, 75)   # 实时估值
-                table.setColumnWidth(8, 60)   # 今日收益/\n收益率
-                table.setColumnWidth(9, 60)   # 近12月百分位
-                table.setColumnWidth(10, 80)  # 趋势
-                table.setColumnWidth(11, 280) # 投资参考建议
-                table.setColumnWidth(12, 60)  # 操作
-                header_view.setSectionResizeMode(12, QHeaderView.Fixed)
-            else:
-                table.setColumnWidth(0, 25)
-                table.setColumnWidth(1, 35)
-                table.setColumnWidth(2, 65)
-                table.setColumnWidth(3, 165)  # 基金名称，支持换行
-                table.setColumnWidth(4, 85)   # 基金板块，支持换行
-                table.setColumnWidth(5, 120)  # 最优参数，支持换行
-                table.setColumnWidth(6, 85)
-                table.setColumnWidth(7, 75)
-                table.setColumnWidth(8, 80)
-                table.setColumnWidth(9, 75)
-                table.setColumnWidth(10, 60)  # 今日收益/\n收益率
-                
-                # 减小数据列宽度，将百分位列和涨跌列统一设置为 60 像素
-                for col_idx in range(11, len(table_headers) - 3):
-                    table.setColumnWidth(col_idx, 60)
-                
-                trend_col_index = len(table_headers) - 3
-                table.setColumnWidth(trend_col_index, 80)
-                
-                time_col_index = len(table_headers) - 2
-                table.setColumnWidth(time_col_index, 130)
-                
-                action_col_index = len(table_headers) - 1
-                header_view.setSectionResizeMode(action_col_index, QHeaderView.Fixed)
-                table.setColumnWidth(action_col_index, 60)
-            
-            # 隐藏指定列
-            table_hidden_cols = hidden_cols_config.get(table_type, [])
-            for i, h in enumerate(table_headers):
-                table.setColumnHidden(i, h in table_hidden_cols)
-            
-            # 保存模型和代理引用
-            if table == self.table0:
-                self.model0 = model
-                self.delegate0 = delegate
-                self.proxy0 = proxy
-            elif table == self.table1:
-                self.model1 = model
-                self.delegate1 = delegate
-                self.proxy1 = proxy
-            elif table == self.table2:
-                self.model2 = model
-                self.delegate2 = delegate
-                self.proxy2 = proxy
-            elif table == self.table3:
-                self.model3 = model
-                self.delegate3 = delegate
-                self.proxy3 = proxy
-            elif table == self.table_cycle:
-                self.model_cycle = model
-                self.delegate_cycle = delegate
-                self.proxy_cycle = proxy
-            else:  # table_other
-                self.model_other = model
-                self.delegate_other = delegate
+        # 让各个 Tab 分别重建自己的表头
+        self.special_tab.rebuild_headers(self.headers, hidden_cols_config.get("special", []))
+        self.my_funds_tab.rebuild_headers(self.headers, hidden_cols_config.get("my_fund", []))
+        self.ranking_tab.rebuild_headers(self.headers, hidden_cols_config.get("ranking", []))
+        self.valuation_tab.rebuild_headers(self.val_headers, hidden_cols_config.get("valuation", []))
+        self.cycle_tab.rebuild_headers(self.cycle_headers, hidden_cols_config.get("cycle", []))
+        self.other_tab.rebuild_headers(self.headers, hidden_cols_config.get("other", []))
+
+        # 兼容性挂载变量引用，使得主窗体的原有逻辑直接存取模型和代理
+        self.model0 = self.special_tab.model
+        self.delegate0 = self.special_tab.delegate
+        self.proxy0 = self.special_tab.proxy
+
+        self.model1 = self.my_funds_tab.model
+        self.delegate1 = self.my_funds_tab.delegate
+        self.proxy1 = self.my_funds_tab.proxy
+
+        self.model2 = self.ranking_tab.model
+        self.delegate2 = self.ranking_tab.delegate
+        self.proxy2 = self.ranking_tab.proxy
+
+        self.model3 = self.valuation_tab.model
+        self.delegate3 = self.valuation_tab.delegate
+        self.proxy3 = self.valuation_tab.proxy
+
+        self.model_cycle = self.cycle_tab.model
+        self.delegate_cycle = self.cycle_tab.delegate
+        self.proxy_cycle = self.cycle_tab.proxy
+
+        self.model_other = self.other_tab.model
+        self.delegate_other = self.other_tab.delegate
 
     def apply_styles(self):
         self.setStyleSheet("""
@@ -1763,6 +1550,36 @@ class FundApp(QMainWindow):
             self.show_backtest_dialog(code, name)
         elif header_text == "趋势":
             self.show_detailed_chart(table, index)
+
+    def show_detailed_chart_by_code(self, code, name):
+        """通过基金代码和名称展示详细走势图"""
+        import traceback
+        try:
+            # 优先从内存缓存中获取历史净值数据
+            history = self.history_cache.get(code)
+            if not history:
+                # 尝试从所有已加载的模型中寻找
+                for model in [self.model0, self.model1, self.model2, self.model3, self.model_cycle, self.model_other]:
+                    if model:
+                        idx = model.find_row_by_code(code)
+                        if idx != -1:
+                            row_data = model.get_row_data(idx)
+                            history = row_data.get("_history")
+                            if history:
+                                break
+            
+            if not history:
+                # 如果内存依然没有，尝试从数据库获取
+                history = self.db.get_history(code) or {}
+                
+            if history and history.get("navs"):
+                dialog = FundChartDialog(code, name, history, self)
+                dialog.exec()
+            else:
+                QMessageBox.information(self, "提示", f"基金 {name} ({code}) 暂无历史走势数据，请等待刷新或手动刷新。")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "走势图载入错误", f"发生未捕获异常:\n{e}\n\n堆栈信息:\n{tb}")
 
     def show_detailed_chart(self, table, index):
         """双击行显示详细走势图"""
