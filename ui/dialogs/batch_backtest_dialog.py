@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabe
                                QTableWidgetItem, QHeaderView, QCheckBox, QProgressBar)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from threads import BatchOptimalStrategyFinder
+from core.threads import BatchOptimalStrategyFinder
 
 class BatchBacktestWidget(QWidget):
     def __init__(self, get_fund_lists_cb, history_cache, db, parent=None):

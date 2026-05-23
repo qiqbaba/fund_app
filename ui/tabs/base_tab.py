@@ -3,7 +3,7 @@ import traceback
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView
 from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import SearchLineEdit, PushButton, PrimaryPushButton, SwitchButton
-from table_model import FundTableModel, FundFilterProxyModel, FundTableDelegate
+from ui.table_model import FundTableModel, FundFilterProxyModel, FundTableDelegate
 
 class BaseFundTableTab(QWidget):
     # 定义子 Tab 向主窗口 Controller 汇报的通用信号

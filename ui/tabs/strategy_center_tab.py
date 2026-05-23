@@ -28,7 +28,7 @@ class StrategyCenterTab(QWidget):
         self.strategy_stack = QStackedWidget()
 
         # 实例化批量寻优和回测面板
-        from batch_backtest_dialog import BatchBacktestWidget
+        from ui.dialogs.batch_backtest_dialog import BatchBacktestWidget
         self.backtest_widget = BatchBacktestWidget(
             self.get_fund_lists_func, 
             self.history_cache, 

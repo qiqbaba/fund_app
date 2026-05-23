@@ -1,11 +1,11 @@
-# threads.py
+# core/threads.py
 import json
 import re
 import time
 import random
 import requests
 from PySide6.QtCore import QThread, Signal
-from db_manager import FundHistoryDB
+from core.db_manager import FundHistoryDB
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -71,7 +71,7 @@ class RankingFetcher(QThread):
             self.ranking_signal.emit([], [], False)
 
     def filter_distinct_sectors(self, fund_list, limit=10):
-        from utils import extract_fund_sector
+        from core.utils import extract_fund_sector
         
         result = []
         seen_sectors = set()
@@ -190,7 +190,7 @@ class FundDataFetcher(QThread):
             page_size_to_fetch = 2000
 
         # 实例化抽象数据网关层
-        from data_gateway import FundDataGateway
+        from core.data_gateway import FundDataGateway
         history_source = self.config.get("history_source", "Auto")
         valuation_source = self.config.get("valuation_source", "Auto")
         gateway = FundDataGateway(session, history_source=history_source, valuation_source=valuation_source)
@@ -432,7 +432,7 @@ class ValuationFetcher(QThread):
                     all_indices = data["Datas"]
                     
                     # 更新全局板块映射库（从官方指数名称提取）
-                    from utils import extract_fund_sector
+                    from core.utils import extract_fund_sector
                     for item in all_indices:
                         if self.isInterruptionRequested(): return
                         idx_name = item.get("INDEXNAME", "")
@@ -507,7 +507,7 @@ class ValuationFetcher(QThread):
                     used_fund_codes = set()  # 全局去重：已被占用的基金代码
 
                     def add_to_list(source, short_tag, limit=10):
-                        from utils import extract_fund_sector
+                        from core.utils import extract_fund_sector
                         count = 0
                         seen_sectors = set()
                         
@@ -917,7 +917,7 @@ class BatchOptimalStrategyFinder(QThread):
         total_funds = len(self.test_funds)
         success_count = 0
         
-        # 1. 准备并行任务所需数据
+        # 1. 准备并行任务所需 data
         tasks = []
         for code, name in self.test_funds:
             if self.isInterruptionRequested():
@@ -984,4 +984,3 @@ class BatchOptimalStrategyFinder(QThread):
             success_count += 1
             
         self.result_signal.emit({'success_count': success_count, 'total_funds': total_funds})
-

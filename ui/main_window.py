@@ -1,4 +1,4 @@
-# main_window.py
+# ui/main_window.py
 import json
 import os
 import re
@@ -30,23 +30,23 @@ with _SilenceStdout():
     from qfluentwidgets import FluentIcon as FIF
 
 
-# 引入拆分出去的模块
-from config import CONFIG_FILE
-from widgets import SettingsDialog, FundChartDialog, StrategyNotificationToast
-from threads import RankingFetcher, FundDataFetcher, ValuationFetcher
-from db_manager import FundHistoryDB
-from table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
-                         HoldingInputWidget, ActionButtonWidget, FundFilterProxyModel)
-from utils import extract_fund_sector
+# 引入拆分出去的模块（绝对导入包修正）
+from core.config import CONFIG_FILE
+from ui.widgets import SettingsDialog, FundChartDialog, StrategyNotificationToast
+from core.threads import RankingFetcher, FundDataFetcher, ValuationFetcher
+from core.db_manager import FundHistoryDB
+from ui.table_model import (FundTableModel, FundTableDelegate, CheckboxCellWidget, 
+                          HoldingInputWidget, ActionButtonWidget, FundFilterProxyModel)
+from core.utils import extract_fund_sector
 
 # 引入新拆分的 Tab 页模块组件
-from special_attention_tab import SpecialAttentionTab
-from my_funds_tab import MyFundsTab
-from ranking_tab import RankingTab
-from valuation_tab import ValuationTab
-from cycle_board_tab import CycleBoardTab
-from other_funds_tab import OtherFundsTab
-from strategy_center_tab import StrategyCenterTab
+from ui.tabs.special_attention_tab import SpecialAttentionTab
+from ui.tabs.my_funds_tab import MyFundsTab
+from ui.tabs.ranking_tab import RankingTab
+from ui.tabs.valuation_tab import ValuationTab
+from ui.tabs.cycle_board_tab import CycleBoardTab
+from ui.tabs.other_funds_tab import OtherFundsTab
+from ui.tabs.strategy_center_tab import StrategyCenterTab
 
 
 CYCLE_FUNDS = [
@@ -186,15 +186,24 @@ class FundApp(MSFluentWindow):
         self.all_funds_dict = {} 
         self.all_funds_code_to_name = {}
         self.fund_search_list = []
-        self.shared_sector_map = {} # 新增：全局板块 API 缓存映射库
+        self.shared_sector_map = {} # 全局板块 API 缓存映射库
         self.need_config_save = False 
         self.active_buy_signals = {} 
         self.is_refreshing = False
         self._status_bar = FakeStatusBar(self)
         
-        # 初始化数据库并从本地加载历史数据
+        # 初始化数据库（不再在主线程同步循环加载，改为后台子线程极速批量预载入，耗时仅需数十毫秒，实现秒开且不卡加载）
         self.db = FundHistoryDB()
-        self.load_history_from_db()
+        
+        def preload_history():
+            try:
+                all_history = self.db.get_all_history()
+                if all_history:
+                    self.history_cache.update(all_history)
+            except Exception as e:
+                print(f"[Preload Warning] 批量预加载历史数据失败: {e}")
+                
+        threading.Thread(target=preload_history, daemon=True).start()
         
         self.refresh_timer = QTimer()
         self.refresh_interval = 60000 
@@ -343,7 +352,6 @@ class FundApp(MSFluentWindow):
         self.proxy_cycle = None
         
         self.rebuild_table_headers()
-
 
     def rebuild_table_headers(self):
         self.headers = ["序号", "持有", "基金代码", "基金名称", "基金板块", "最优参数", "持有金额/\n收益率", 
@@ -808,10 +816,9 @@ class FundApp(MSFluentWindow):
             QMessageBox.warning(self, "数据不足", f"没有找到基金 {name} ({code}) 的历史数据，请稍后重试或等待刷新完成。")
             return
             
-        from backtest_dialog import BacktestDialog
+        from ui.dialogs.backtest_dialog import BacktestDialog
         dialog = BacktestDialog(code, name, history_data, self)
         dialog.exec()
-
 
     def toggle_special_fund(self, code):
         """切换特别关注状态"""
@@ -857,6 +864,7 @@ class FundApp(MSFluentWindow):
                         model.sort(header_view.sortIndicatorSection(), header_view.sortIndicatorOrder())
                 
             self.statusBar().showMessage("✅ 已更新置顶状态", 2000)
+
     def add_from_market(self, code, name, sector, to_special=False):
         if not sector or sector in ["未知", "-", ""] or "最高" in sector or "最低" in sector:
             sector = extract_fund_sector(name, code)
@@ -1067,6 +1075,9 @@ class FundApp(MSFluentWindow):
         if hasattr(self, 'model_cycle') and self.model_cycle:
             self.model_cycle.clear_all()
         
+        # 一次性批量获取所有有最优策略参数的基金，大幅减少磁盘 I/O 带来的主线程阻塞
+        all_opts = self.db.get_all_optimal_strategies() or {}
+        
         # 添加新的行
         for code in funds:
             row_data = {}
@@ -1082,7 +1093,8 @@ class FundApp(MSFluentWindow):
             fund_info = self.config["funds_info"][code]
             row_data["基金板块"] = fund_info.get("sector", "")
             
-            opt = self.db.get_optimal_strategy(code)
+            # 从批量获取的内存字典中查找策略参数，性能由 O(N) 磁盘 I/O 降为 O(1) 内存查表
+            opt = all_opts.get(code)
             if opt:
                 row_data["最优参数"] = f"买{opt['buy_days']}天>{opt['buy_drop']}% 盈>{opt['target_profit']}%"
                 row_data["_opt_time"] = opt.get('update_time')
@@ -1113,8 +1125,8 @@ class FundApp(MSFluentWindow):
                 row_data["关联基金代码"] = cf["code"]
                 row_data["关联基金名称"] = cf["name"]
                 
-                # 获取策略
-                opt = self.db.get_optimal_strategy(cf["code"])
+                # 从内存字典中快速查找周期基金的策略参数
+                opt = all_opts.get(cf["code"])
                 if opt:
                     row_data["_opt_time"] = opt.get('update_time')
                 else:
@@ -1908,4 +1920,3 @@ if __name__ == "__main__":
     window = FundApp()
     window.show()
     app.exec()
-

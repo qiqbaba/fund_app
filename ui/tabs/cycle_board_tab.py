@@ -1,5 +1,5 @@
 # cycle_board_tab.py
-from base_tab import BaseFundTableTab
+from ui.tabs.base_tab import BaseFundTableTab
 from PySide6.QtWidgets import QHeaderView, QMenu
 from PySide6.QtGui import QAction
 

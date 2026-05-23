@@ -111,4 +111,3 @@ def extract_fund_sector(name, code=None):
         return clean_name if len(clean_name) <= 8 else clean_name[:6]
     
     return name[:6] if len(name) >= 2 else "未知"
-

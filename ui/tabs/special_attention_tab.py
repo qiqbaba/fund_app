@@ -1,16 +1,16 @@
-# my_funds_tab.py
-from base_tab import BaseFundTableTab
+# special_attention_tab.py
+from ui.tabs.base_tab import BaseFundTableTab
 from PySide6.QtWidgets import QMenu
 from PySide6.QtGui import QAction
 
-class MyFundsTab(BaseFundTableTab):
-    """我的自选基金 Tab"""
-
+class SpecialAttentionTab(BaseFundTableTab):
+    """特别关注表格 Tab"""
+    
     def __init__(self, parent=None):
-        super().__init__("my_fund", parent)
+        super().__init__("special", parent)
 
     def show_context_menu(self, pos):
-        """特化的我的自选右键菜单"""
+        """特化的特别关注右键菜单"""
         index = self.table.indexAt(pos)
         if not index.isValid():
             return
@@ -23,13 +23,7 @@ class MyFundsTab(BaseFundTableTab):
         name = row_data.get("基金名称") or "未知"
         
         is_pinned = row_data.get("_is_pinned", False)
-        is_special = row_data.get("_is_special", False)
-
-        # 向上查找真正的 is_special 状态 (因为从 config 中读出来的配置更准，但在 row_data 也带了)
-        # 为求稳妥，我们可以直接用 row_data 中的 `_is_special`
-        main_win = self.window()
-        if main_win and hasattr(main_win, 'config'):
-            is_special = main_win.config.get("funds_info", {}).get(code, {}).get("is_special", False)
+        is_special = row_data.get("_is_special", True) # 因为在此 Tab 默认就是特别关注
 
         menu = QMenu(self)
 

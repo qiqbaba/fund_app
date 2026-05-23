@@ -3,8 +3,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineE
                                QTableWidgetItem, QHeaderView, QWidget, QCheckBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from db_manager import FundHistoryDB
-from threads import OptimalStrategyFinder
+from core.db_manager import FundHistoryDB
+from core.threads import OptimalStrategyFinder
 
 class BacktestDialog(QDialog):
     def __init__(self, code, name, history_data, parent=None):

@@ -1,16 +1,16 @@
-# valuation_tab.py
-from base_tab import BaseFundTableTab
+# other_funds_tab.py
+from ui.tabs.base_tab import BaseFundTableTab
 from PySide6.QtWidgets import QMenu
 from PySide6.QtGui import QAction
 
-class ValuationTab(BaseFundTableTab):
-    """估值榜 Tab"""
+class OtherFundsTab(BaseFundTableTab):
+    """其他 (已有数据) 表格 Tab"""
 
     def __init__(self, parent=None):
-        super().__init__("valuation", parent)
+        super().__init__("other", parent)
 
     def show_context_menu(self, pos):
-        """特化的估值榜右键菜单"""
+        """特化的其他列表右键菜单"""
         index = self.table.indexAt(pos)
         if not index.isValid():
             return

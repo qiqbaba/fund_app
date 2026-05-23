@@ -11,4 +11,5 @@ output.json
 
 # 本地历史数据库
 fund_history.db
-
+*.db-wal
+*.db-shm

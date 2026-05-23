@@ -1,16 +1,16 @@
-# ranking_tab.py
-from base_tab import BaseFundTableTab
+# valuation_tab.py
+from ui.tabs.base_tab import BaseFundTableTab
 from PySide6.QtWidgets import QMenu
 from PySide6.QtGui import QAction
 
-class RankingTab(BaseFundTableTab):
-    """今日指数ETF独立涨跌榜 Tab"""
+class ValuationTab(BaseFundTableTab):
+    """估值榜 Tab"""
 
     def __init__(self, parent=None):
-        super().__init__("ranking", parent)
+        super().__init__("valuation", parent)
 
     def show_context_menu(self, pos):
-        """特化的市场排行榜右键菜单"""
+        """特化的估值榜右键菜单"""
         index = self.table.indexAt(pos)
         if not index.isValid():
             return

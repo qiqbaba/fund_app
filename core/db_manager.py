@@ -5,7 +5,7 @@ import os
 import queue
 import threading
 import time
-from config import BASE_DIR
+from core.config import BASE_DIR
 
 DB_FILE = os.path.join(BASE_DIR, "fund_history.db")
 
@@ -240,6 +240,10 @@ class FundHistoryDB:
         """获取所有有最优策略参数的基金"""
         return self._submit_task('get_all_optimal_strategies')
 
+    def get_all_history(self):
+        """一次性批量获取所有基金的历史净值数据（超高性能预加载）"""
+        return self._submit_task('get_all_history')
+
     # ==================== 底层由 Worker 线程执行的同步实现 ====================
 
     def _sync_get_history(self, conn, cursor, fund_code):
@@ -367,4 +371,18 @@ class FundHistoryDB:
                 'avg_profit': row[9],
                 'update_time': row[10] if len(row) > 10 else None
             }
+        return result
+
+    def _sync_get_all_history(self, conn, cursor):
+        cursor.execute('''
+            SELECT fund_code, jzrq, dwjz FROM fund_nav_detail 
+            ORDER BY fund_code, jzrq DESC
+        ''')
+        rows = cursor.fetchall()
+        result = {}
+        for fund_code, jzrq, dwjz in rows:
+            if fund_code not in result:
+                result[fund_code] = {'jzrq': jzrq, 'navs': [], 'dates': []}
+            result[fund_code]['navs'].append(dwjz)
+            result[fund_code]['dates'].append(jzrq)
         return result
