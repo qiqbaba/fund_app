@@ -19,6 +19,12 @@ class SettingsDialog(QDialog):
         self.current_headers = current_headers
         self.val_headers = val_headers
         
+        from qfluentwidgets import isDarkTheme
+        if isDarkTheme():
+            self.setStyleSheet("background-color: #202020; color: #f1f2f6;")
+        else:
+            self.setStyleSheet("background-color: #f8f9fa; color: #2f3542;")
+        
         main_layout = QVBoxLayout(self)
         
         # 参数设置区域
@@ -504,6 +510,18 @@ class FundChartDialog(QDialog):
         self.setWindowTitle(f"走势详情: {name} ({code})")
         self.resize(960, 620)
         
+        from qfluentwidgets import isDarkTheme
+        is_dark = isDarkTheme()
+        bg_color = "#202020" if is_dark else "white"
+        border_color = "#3a3a3a" if is_dark else "#f1f2f6"
+        text_color = "#f1f2f6" if is_dark else "#2f3542"
+        grid_color = "#2c2c2c" if is_dark else "#f1f2f6"
+        
+        if is_dark:
+            self.setStyleSheet("background-color: #202020; color: #f1f2f6;")
+        else:
+            self.setStyleSheet("background-color: #f8f9fa; color: #2f3542;")
+        
         # 1. 整理数据并统一转换为正序
         self.all_navs = history_data.get("navs", [])[::-1]
         self.all_dates = history_data.get("dates", [])[::-1]
@@ -543,7 +561,7 @@ class FundChartDialog(QDialog):
         # A. 顶部信息与周期选择
         top_ctrl_layout = QHBoxLayout()
         self.info_label = QLabel(f"<b>{name} ({code})</b>")
-        self.info_label.setStyleSheet("font-size: 15px; color: #2f3542;")
+        self.info_label.setStyleSheet(f"font-size: 15px; color: {text_color};")
         top_ctrl_layout.addWidget(self.info_label)
         top_ctrl_layout.addStretch()
         
@@ -553,16 +571,26 @@ class FundChartDialog(QDialog):
             ("近1月", 21), ("近3月", 63), ("近6月", 126), ("近1年", 252), 
             ("近3年", 756), ("近5年", 1260), ("今年以来", "YTD"), ("全部", 0)
         ]
+        
+        if is_dark:
+            btn_style = """
+                QPushButton { background-color: #2c2c2c; color: #f1f2f6; border: 1px solid #404040; border-radius: 4px; padding: 4px;}
+                QPushButton:hover { background-color: #3e3e3e; }
+                QPushButton:checked { background-color: #0097e6; color: white; border-color: #0097e6; font-weight: bold;}
+            """
+        else:
+            btn_style = """
+                QPushButton { background-color: #f1f2f6; color: #2f3542; border: 1px solid #dcdde1; border-radius: 4px; padding: 4px;}
+                QPushButton:hover { background-color: #dfe4ea; }
+                QPushButton:checked { background-color: #0097e6; color: white; border-color: #0097e6; font-weight: bold;}
+            """
+            
         for text, days in periods:
             btn = QPushButton(text)
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFixedWidth(70)
-            btn.setStyleSheet("""
-                QPushButton { background-color: #f1f2f6; color: #2f3542; border: 1px solid #dcdde1; border-radius: 4px; padding: 4px;}
-                QPushButton:hover { background-color: #dfe4ea; }
-                QPushButton:checked { background-color: #0097e6; color: white; border-color: #0097e6; font-weight: bold;}
-            """)
+            btn.setStyleSheet(btn_style)
             btn.clicked.connect(lambda checked, d=days, t=text: self.change_period(t, d))
             self.btn_group_layout.addWidget(btn)
             self.btns[text] = btn
@@ -578,7 +606,7 @@ class FundChartDialog(QDialog):
         self.top_chart_view = InteractiveChartView(self)
         self.top_chart_view.is_top = True
         self.top_chart_view.setMinimumHeight(240)
-        self.top_chart_view.setStyleSheet("background-color: white; border: 1px solid #f1f2f6; border-radius: 4px;")
+        self.top_chart_view.setStyleSheet(f"background-color: {bg_color}; border: 1px solid {border_color}; border-radius: 4px;")
         layout.addWidget(self.top_chart_view)
         
         # D. 中间技术指标选择控制栏
@@ -586,7 +614,7 @@ class FundChartDialog(QDialog):
         ctrl_bar_layout.setContentsMargins(5, 2, 5, 2)
         
         indicator_title = QLabel("📊 量化分析指标子图:")
-        indicator_title.setStyleSheet("font-weight: bold; color: #2f3542; font-size: 12px;")
+        indicator_title.setStyleSheet(f"font-weight: bold; color: {text_color}; font-size: 12px;")
         ctrl_bar_layout.addWidget(indicator_title)
         
         from PySide6.QtWidgets import QComboBox
@@ -598,17 +626,32 @@ class FundChartDialog(QDialog):
             "📈 KDJ 超买超卖",
             "📉 RSI 强弱强弱"
         ])
-        self.indicator_combo.setStyleSheet("""
-            QComboBox {
-                border: 1px solid #dcdde1; border-radius: 4px; padding: 4px 10px; background: white; color: #2f3542; font-size: 12px;
-            }
-            QComboBox::drop-down {
-                subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left-width: 0px;
-            }
-            QComboBox:hover {
-                border-color: #0097e6;
-            }
-        """)
+        
+        if is_dark:
+            combo_style = """
+                QComboBox {
+                    border: 1px solid #404040; border-radius: 4px; padding: 4px 10px; background: #2c2c2c; color: #f1f2f6; font-size: 12px;
+                }
+                QComboBox::drop-down {
+                    subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left-width: 0px;
+                }
+                QComboBox:hover {
+                    border-color: #0097e6;
+                }
+            """
+        else:
+            combo_style = """
+                QComboBox {
+                    border: 1px solid #dcdde1; border-radius: 4px; padding: 4px 10px; background: white; color: #2f3542; font-size: 12px;
+                }
+                QComboBox::drop-down {
+                    subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left-width: 0px;
+                }
+                QComboBox:hover {
+                    border-color: #0097e6;
+                }
+            """
+        self.indicator_combo.setStyleSheet(combo_style)
         self.indicator_combo.currentIndexChanged.connect(self.handle_indicator_changed)
         ctrl_bar_layout.addWidget(self.indicator_combo)
         ctrl_bar_layout.addStretch()
@@ -618,7 +661,7 @@ class FundChartDialog(QDialog):
         self.bottom_chart_view = InteractiveChartView(self)
         self.bottom_chart_view.is_top = False
         self.bottom_chart_view.setMinimumHeight(180)
-        self.bottom_chart_view.setStyleSheet("background-color: white; border: 1px solid #f1f2f6; border-radius: 4px;")
+        self.bottom_chart_view.setStyleSheet(f"background-color: {bg_color}; border: 1px solid {border_color}; border-radius: 4px;")
         layout.addWidget(self.bottom_chart_view)
         
         # F. 跨图联动 hover 状态互指绑定
@@ -684,14 +727,14 @@ class FundChartDialog(QDialog):
         # 6. 配置联动 X 轴与各自的 Y 轴
         self.top_axis_x = QValueAxis()
         self.top_axis_x.setLabelsVisible(False)
-        self.top_axis_x.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
-        self.top_axis_x.setLinePenColor(QColor("#dcdde1"))
+        self.top_axis_x.setGridLinePen(QPen(QColor(grid_color), 1))
+        self.top_axis_x.setLinePenColor(QColor(border_color))
         
         self.top_axis_y = QValueAxis()
         self.top_axis_y.setLabelFormat("%.2f%%")
-        self.top_axis_y.setLabelsColor(QColor("#7f8c8d"))
-        self.top_axis_y.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
-        self.top_axis_y.setLinePenColor(QColor("#dcdde1"))
+        self.top_axis_y.setLabelsColor(QColor(text_color))
+        self.top_axis_y.setGridLinePen(QPen(QColor(grid_color), 1))
+        self.top_axis_y.setLinePenColor(QColor(border_color))
         
         self.top_chart.addAxis(self.top_axis_x, Qt.AlignBottom)
         self.top_chart.addAxis(self.top_axis_y, Qt.AlignLeft)
@@ -711,13 +754,13 @@ class FundChartDialog(QDialog):
         # 副图的轴定义
         self.bottom_axis_x = QValueAxis()
         self.bottom_axis_x.setLabelsVisible(False)
-        self.bottom_axis_x.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
-        self.bottom_axis_x.setLinePenColor(QColor("#dcdde1"))
+        self.bottom_axis_x.setGridLinePen(QPen(QColor(grid_color), 1))
+        self.bottom_axis_x.setLinePenColor(QColor(border_color))
         
         self.bottom_axis_y = QValueAxis()
-        self.bottom_axis_y.setLabelsColor(QColor("#7f8c8d"))
-        self.bottom_axis_y.setGridLinePen(QPen(QColor("#f1f2f6"), 1))
-        self.bottom_axis_y.setLinePenColor(QColor("#dcdde1"))
+        self.bottom_axis_y.setLabelsColor(QColor(text_color))
+        self.bottom_axis_y.setGridLinePen(QPen(QColor(grid_color), 1))
+        self.bottom_axis_y.setLinePenColor(QColor(border_color))
         
         self.bottom_chart.addAxis(self.bottom_axis_x, Qt.AlignBottom)
         self.bottom_chart.addAxis(self.bottom_axis_y, Qt.AlignLeft)

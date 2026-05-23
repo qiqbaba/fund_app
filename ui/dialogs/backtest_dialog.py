@@ -1,7 +1,8 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QFormLayout, QMessageBox, QGroupBox, QTableWidget,
+                               QPushButton, QFormLayout, QMessageBox, QGroupBox,
                                QTableWidgetItem, QHeaderView, QWidget, QCheckBox)
 from PySide6.QtCore import Qt
+from qfluentwidgets import TableWidget
 from PySide6.QtGui import QColor
 from core.db_manager import FundHistoryDB
 from core.threads import OptimalStrategyFinder
@@ -38,14 +39,29 @@ class BacktestDialog(QDialog):
         # 最优参数提示框
         self.lbl_opt_tip = QLabel()
         self.lbl_opt_tip.setWordWrap(True)
-        self.lbl_opt_tip.setStyleSheet("""
-            background-color: #e3f2fd;
-            color: #0d47a1;
-            border: 1px solid #bbdefb;
-            border-radius: 4px;
-            padding: 6px;
-            font-weight: bold;
-        """)
+        
+        from qfluentwidgets import isDarkTheme
+        is_dark = isDarkTheme()
+        if is_dark:
+            self.lbl_opt_tip.setStyleSheet("""
+                background-color: #1e293b;
+                color: #60a5fa;
+                border: 1px solid #3b82f6;
+                border-radius: 4px;
+                padding: 6px;
+                font-weight: bold;
+            """)
+            self.setStyleSheet("background-color: #202020; color: #f1f2f6;")
+        else:
+            self.lbl_opt_tip.setStyleSheet("""
+                background-color: #e3f2fd;
+                color: #0d47a1;
+                border: 1px solid #bbdefb;
+                border-radius: 4px;
+                padding: 6px;
+                font-weight: bold;
+            """)
+            self.setStyleSheet("background-color: #f8f9fa; color: #2f3542;")
         params_layout.addRow(self.lbl_opt_tip)
 
         # 买入条件
@@ -119,7 +135,7 @@ class BacktestDialog(QDialog):
         stats_layout = QVBoxLayout()
         
         self.lbl_date_range = QLabel("回测数据范围: -")
-        self.lbl_date_range.setStyleSheet("color: #34495e; margin-bottom: 5px;")
+        self.lbl_date_range.setStyleSheet("margin-bottom: 5px;")
         stats_layout.addWidget(self.lbl_date_range)
         
         stats_inner_layout = QHBoxLayout()
@@ -139,9 +155,9 @@ class BacktestDialog(QDialog):
         stats_layout.addLayout(stats_inner_layout)
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
-
+ 
         # 交易记录表格
-        self.table = QTableWidget()
+        self.table = TableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(["买入日期", "买入净值", "卖出日期", "卖出净值", "持有天数", "收益率", "结果"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)

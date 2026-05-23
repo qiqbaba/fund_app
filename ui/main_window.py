@@ -182,6 +182,15 @@ class FundApp(MSFluentWindow):
         self.resize(1400, 600)
         
         self.config = self.load_config()
+        
+        # 加载并应用持久化主题设置
+        from qfluentwidgets import setTheme, Theme
+        theme_str = self.config.get("theme", "Light")
+        if theme_str == "Dark":
+            setTheme(Theme.DARK)
+        else:
+            setTheme(Theme.LIGHT)
+            
         self.history_cache = {} 
         self.all_funds_dict = {} 
         self.all_funds_code_to_name = {}
@@ -283,26 +292,7 @@ class FundApp(MSFluentWindow):
         self.search_popup.setFocusPolicy(Qt.NoFocus)
         self.search_popup.setMouseTracking(True)
         self.search_popup.itemClicked.connect(self.on_search_item_clicked)
-        self.search_popup.setStyleSheet("""
-            QListWidget {
-                background-color: white;
-                border: 1px solid #dcdde1;
-                border-radius: 6px;
-                font-size: 13px;
-                padding: 2px 0;
-                outline: none;
-            }
-            QListWidget::item {
-                padding: 6px 10px;
-                border-bottom: 1px solid #f1f2f6;
-                color: #2f3542;
-            }
-            QListWidget::item:last-child { border-bottom: none; }
-            QListWidget::item:hover {
-                background-color: #e8f4fd;
-                color: #0097e6;
-            }
-        """)
+        self.apply_theme_styles()
         self.search_popup.hide()
         self.active_input_box = self.special_tab.input_box # 默认激活的输入框
 
@@ -434,18 +424,8 @@ class FundApp(MSFluentWindow):
         self.delegate_other = self.other_tab.delegate
 
     def apply_styles(self):
-        self.setStyleSheet("""
-            QWidget#AlertCard {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20bf6b, stop:1 #05c46b);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                margin-top: 5px;
-                margin-bottom: 5px;
-            }
-            QTableView::item:hover {
-                background-color: transparent;
-            }
-        """)
+        # 兼容性包装：直接路由至统一的主题样式处理器，避免产生 setStyleSheet 样式表冲突覆盖
+        self.apply_theme_styles()
 
     def load_config(self):
         default_config = {"funds_info": {}, "drop_days": [2, 4], "percentile_months": [1, 2, 3, 6, 9, 12, 24], "hidden_columns": []}
@@ -519,9 +499,122 @@ class FundApp(MSFluentWindow):
             "其他": [(self.model_other.get_row_data(i)["基金代码"], self.model_other.get_row_data(i)["基金名称"]) for i in range(self.model_other.rowCount())] if self.model_other else []
         }
 
+    def apply_theme_styles(self):
+        """动态应用主框架、自定义组件及子页面在当前明暗主题下的专属样式"""
+        from qfluentwidgets import isDarkTheme
+        is_dark = isDarkTheme()
+        if is_dark:
+            # 黑暗模式：强制将主视窗口、子 Tab 容器、侧边导航栏区域及表头全部统一为高阶暗黑色系
+            self.setStyleSheet("""
+                FundApp {
+                    background-color: #202020;
+                }
+                /* 各个子 Tab 页面背景同步 */
+                QWidget#special_tab, QWidget#my_funds_tab, QWidget#ranking_tab, 
+                QWidget#valuation_tab, QWidget#cycle_tab, QWidget#other_tab, QWidget#strategy_tab {
+                    background-color: #202020;
+                }
+                QWidget#AlertCard {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20bf6b, stop:1 #05c46b);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 6px;
+                    margin-top: 5px;
+                    margin-bottom: 5px;
+                }
+                QTableView::item:hover {
+                    background-color: transparent;
+                }
+                /* 表格表头自适应黑暗模式样式 */
+                QHeaderView::section {
+                    background-color: #2c2c2c;
+                    color: #f1f2f6;
+                    border: 1px solid #3a3a3a;
+                }
+            """)
+            
+            self.search_popup.setStyleSheet("""
+                QListWidget {
+                    background-color: #2c2c2c;
+                    border: 1px solid #404040;
+                    border-radius: 6px;
+                    font-size: 13px;
+                    padding: 2px 0;
+                    outline: none;
+                    color: #f1f2f6;
+                }
+                QListWidget::item {
+                    padding: 6px 10px;
+                    border-bottom: 1px solid #3c3c3c;
+                    color: #f1f2f6;
+                }
+                QListWidget::item:last-child { border-bottom: none; }
+                QListWidget::item:hover {
+                    background-color: #3e3e3e;
+                    color: #0097e6;
+                }
+            """)
+        else:
+            # 明亮模式：恢复经典大气质感亮色系
+            self.setStyleSheet("""
+                FundApp {
+                    background-color: #f8f9fa;
+                }
+                QWidget#special_tab, QWidget#my_funds_tab, QWidget#ranking_tab, 
+                QWidget#valuation_tab, QWidget#cycle_tab, QWidget#other_tab, QWidget#strategy_tab {
+                    background-color: #ffffff;
+                }
+                QWidget#AlertCard {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20bf6b, stop:1 #05c46b);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 6px;
+                    margin-top: 5px;
+                    margin-bottom: 5px;
+                }
+                QTableView::item:hover {
+                    background-color: transparent;
+                }
+                QHeaderView::section {
+                    background-color: #f1f2f6;
+                    color: #2f3542;
+                    border: 1px solid #dcdde1;
+                }
+            """)
+            
+            self.search_popup.setStyleSheet("""
+                QListWidget {
+                    background-color: white;
+                    border: 1px solid #dcdde1;
+                    border-radius: 6px;
+                    font-size: 13px;
+                    padding: 2px 0;
+                    outline: none;
+                }
+                QListWidget::item {
+                    padding: 6px 10px;
+                    border-bottom: 1px solid #f1f2f6;
+                    color: #2f3542;
+                }
+                QListWidget::item:last-child { border-bottom: none; }
+                QListWidget::item:hover {
+                    background-color: #e8f4fd;
+                    color: #0097e6;
+                }
+            """)
+
     def toggle_app_theme(self):
-        """一键无缝切换明暗主题"""
+        """一键无缝切换明暗主题并保存与重绘样式"""
         toggleTheme()
+        
+        from qfluentwidgets import isDarkTheme
+        self.config["theme"] = "Dark" if isDarkTheme() else "Light"
+        self.save_config()
+        
+        self.apply_theme_styles()
+        
+        # 强制更新表格视口渲染，使 Delegate 重新获取新主题颜色，消除置顶行白底白字
+        for table in [self.table0, self.table1, self.table2, self.table3, self.table_cycle, self.table_other]:
+            if table and table.viewport():
+                table.viewport().update()
 
     def on_tab_auto_refresh_toggled(self, checked):
         """响应任何子 Tab 内 SwitchButton 滑动开关的状态变更"""

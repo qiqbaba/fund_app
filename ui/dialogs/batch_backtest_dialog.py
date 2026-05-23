@@ -1,7 +1,8 @@
 from PySide6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QFormLayout, QMessageBox, QGroupBox, QTableWidget,
+                               QPushButton, QFormLayout, QMessageBox, QGroupBox,
                                QTableWidgetItem, QHeaderView, QCheckBox, QProgressBar)
 from PySide6.QtCore import Qt
+from qfluentwidgets import TableWidget
 from PySide6.QtGui import QColor
 from core.threads import BatchOptimalStrategyFinder
 
@@ -117,7 +118,7 @@ class BatchBacktestWidget(QWidget):
         layout.addWidget(self.progress_bar)
 
         # 结果统计表格
-        self.table = QTableWidget()
+        self.table = TableWidget()
         self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(["基金代码", "基金名称", "回测参数", "触发次数", "成功止盈", "胜率", "平均单次收益", "年均止盈", "最长持有"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -353,15 +354,22 @@ class BatchBacktestWidget(QWidget):
         name, trades, start_date, end_date, total_days = cache_data
         
         dialog = QDialog(self)
+        
+        from qfluentwidgets import isDarkTheme
+        if isDarkTheme():
+            dialog.setStyleSheet("background-color: #202020; color: #f1f2f6;")
+        else:
+            dialog.setStyleSheet("background-color: #f8f9fa; color: #2f3542;")
+            
         dialog.setWindowTitle(f"回测明细: {name} ({code})")
         dialog.resize(700, 500)
         layout = QVBoxLayout(dialog)
         
         info_label = QLabel(f"<b>回测数据范围:</b> {start_date} 至 {end_date} (共 {total_days} 天历史数据)")
-        info_label.setStyleSheet("color: #34495e; padding: 5px;")
+        info_label.setStyleSheet("padding: 5px;")
         layout.addWidget(info_label)
         
-        detail_table = QTableWidget()
+        detail_table = TableWidget()
         detail_table.setColumnCount(7)
         detail_table.setHorizontalHeaderLabels(["买入日期", "买入净值", "卖出日期", "卖出净值", "持有天数", "收益率", "结果"])
         detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)

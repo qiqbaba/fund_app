@@ -1,8 +1,8 @@
 # base_tab.py
 import traceback
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QTableView
 from PySide6.QtCore import Qt, Signal
-from qfluentwidgets import SearchLineEdit, PushButton, PrimaryPushButton, SwitchButton
+from qfluentwidgets import SearchLineEdit, PushButton, PrimaryPushButton, SwitchButton, TableView
 from ui.table_model import FundTableModel, FundFilterProxyModel, FundTableDelegate
 
 class BaseFundTableTab(QWidget):
@@ -88,7 +88,7 @@ class BaseFundTableTab(QWidget):
         self.layout.addLayout(self.top_bar_layout)
 
         # 2. 创建表格
-        self.table = QTableView()
+        self.table = TableView()
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableView.SelectRows)
@@ -113,7 +113,7 @@ class BaseFundTableTab(QWidget):
         """重新组装表头和列"""
         self.headers = headers
         self.model = FundTableModel(self.headers, parent=self)
-        self.delegate = FundTableDelegate(table_type=self.table_type, parent=self)
+        self.delegate = FundTableDelegate(table_type=self.table_type, parent=self.table)
 
         # 挂载前先禁用排序，防范渲染冲突
         self.table.setSortingEnabled(False)

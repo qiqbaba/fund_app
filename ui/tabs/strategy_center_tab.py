@@ -1,6 +1,7 @@
 # strategy_center_tab.py
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QListWidget, QStackedWidget
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QStackedWidget
 from PySide6.QtCore import Qt
+from qfluentwidgets import ListWidget
 
 class StrategyCenterTab(QWidget):
     """策略中心 Tab"""
@@ -19,7 +20,7 @@ class StrategyCenterTab(QWidget):
         layout.setSpacing(5)
 
         # 左侧策略选择列表
-        self.strategy_list = QListWidget()
+        self.strategy_list = ListWidget()
         self.strategy_list.setFixedWidth(150)
         self.strategy_list.addItem("📉 抄底止盈回测")
         self.strategy_list.addItem("（待添加策略）")

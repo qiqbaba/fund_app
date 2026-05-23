@@ -193,6 +193,7 @@ class FundDataGateway:
                 headers = {"Referer": "https://finance.sina.com.cn"}
                 r = self.session.get(url, headers=headers, timeout=2)
                 if r.status_code == 200:
+                    r.encoding = 'gbk'  # 显式指定编码为 GBK，避免中文乱码
                     match = re.search(r'hq_str_fu_\d+="([^"]+)"', r.text)
                     if match:
                         parts = match.group(1).split(',')
@@ -225,6 +226,7 @@ class FundDataGateway:
                 url = f"http://qt.gtimg.cn/q=jj{code}"
                 r = self.session.get(url, timeout=2)
                 if r.status_code == 200:
+                    r.encoding = 'gbk'  # 显式指定编码为 GBK，避免中文乱码
                     match = re.search(r'v_jj\d+="([^"]+)"', r.text)
                     if match:
                         parts = match.group(1).split('~')

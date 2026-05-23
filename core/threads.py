@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from core.db_manager import FundHistoryDB
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import numpy as np
 
 class RankingFetcher(QThread):
     """抓取当日指数/板块场外ETF涨跌排行榜的线程（带板块智能去重去同质化）"""
@@ -598,76 +599,94 @@ class ValuationFetcher(QThread):
 
 def run_backtest(all_navs, buy_days, buy_drop_pct, target_profit_pct, hold_max=90):
     """
-    模拟回测运算核心函数。
+    极致混合优化的 run_backtest 核心：
+    - 输入接受原始 Python 列表 all_navs（无需任何 tolist 逆转换开销）。
+    - 仅在第一二步全局快速转换 NumPy 数组进行 rolling_max 和信号掩码运算。
+    - 持有期内的小循环直接原位访问原始 Python 列表，零 C 包装与转换开销，实现物理级别的性能极致。
     """
+    n = len(all_navs)
+    if n <= buy_days:
+        return 0.0, 0.0, 0, False
+
     buy_drop = buy_drop_pct / 100.0
     target_profit = target_profit_pct / 100.0
+
+    # 1. 纯 NumPy 高效原位计算 rolling_max (只做一次 List->Array 极速转化，最多循环 buy_days 次)
+    navs_arr = np.asarray(all_navs, dtype=np.float64)
+    rolling_max = np.copy(navs_arr)
+    for k in range(1, buy_days + 1):
+        rolling_max[k:] = np.maximum(rolling_max[k:], navs_arr[:-k])
+
+    # 2. 向量化判定跌幅（直接除法，避免 Fancy Indexing 拷贝开销）
+    drops = (navs_arr - rolling_max) / rolling_max
+
+    trigger_mask = (drops <= -buy_drop)
+    trigger_mask[:buy_days] = False
+
+    trigger_indices = np.where(trigger_mask)[0]
+    num_triggers = len(trigger_indices)
     
     trades = []
-    i = buy_days
-    n = len(all_navs)
-    while i < n:
-        nav_today = all_navs[i]
-        nav_past_max = max(all_navs[i - buy_days : i + 1])
-        if nav_past_max == 0:
-            i += 1
+    idx_ptr = 0
+
+    # 3. 分段跳转与原位 Python 列表轻量级标量查找（规避 NumPy 单元素索引包装开销与 tolist 开销）
+    while idx_ptr < num_triggers:
+        i = int(trigger_indices[idx_ptr])  # 强转原生 int，避免 numpy.int64 对 List 的慢速索引转换开销！
+        buy_nav = all_navs[i]  # 直接原位访问 Python List，极速！
+        if buy_nav == 0:
+            idx_ptr += 1
             continue
-        drop = (nav_today - nav_past_max) / nav_past_max
-        
-        if drop <= -buy_drop:
-            # 触发买入
-            buy_nav = nav_today
-            success = False
-            actual_hold = 0
-            sell_idx = i
-            sell_nav = buy_nav
+
+        success = False
+        actual_hold = 0
+        sell_idx = i
+        sell_nav = buy_nav
+
+        limit = min(hold_max, n - 1 - i)
+        for j in range(1, limit + 1):
+            current_nav = all_navs[i + j]  # 直接原位访问 Python List，极速！
+            profit = (current_nav - buy_nav) / buy_nav
             
-            for j in range(1, n - i):
-                current_nav = all_navs[i + j]
-                profit = (current_nav - buy_nav) / buy_nav
+            target = target_profit + 0.015 if j < 7 else target_profit
+            if profit >= target:
+                success = True
+                actual_hold = j
+                sell_idx = i + j
+                sell_nav = current_nav
+                break
                 
-                # 7天内扣去1.5%赎回惩罚，所以止盈收益率需要比原目标高1.5%
-                target = target_profit + 0.015 if j < 7 else target_profit
-                if profit >= target:
-                    success = True
-                    actual_hold = j
-                    sell_idx = i + j
-                    sell_nav = current_nav
-                    break
-                    
-                if j >= hold_max:
-                    actual_hold = j
-                    sell_idx = i + j
-                    sell_nav = current_nav
-                    break
-            else:
-                actual_hold = n - 1 - i
-                if actual_hold > 0:
-                    sell_idx = n - 1
-                    sell_nav = all_navs[sell_idx]
-                    
-            # 计算实际到手收益
-            final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0
-            if actual_hold < 7:
-                final_profit -= 0.015  # 惩罚赎回费
-                
-            trades.append({
-                "success": success,
-                "profit": final_profit
-            })
-            i = sell_idx + 1
+            if j >= hold_max:
+                actual_hold = j
+                sell_idx = i + j
+                sell_nav = current_nav
+                break
         else:
-            i += 1
-            
+            actual_hold = limit
+            if actual_hold > 0:
+                sell_idx = i + limit
+                sell_nav = all_navs[sell_idx]
+
+        final_profit = (sell_nav - buy_nav) / buy_nav if buy_nav != 0 else 0.0
+        if actual_hold < 7:
+            final_profit -= 0.015
+
+        trades.append({
+            "success": success,
+            "profit": final_profit
+        })
+
+        # 核心跳转：瞬间定位到下一个买入触发点
+        idx_ptr = np.searchsorted(trigger_indices, sell_idx + 1)
+
     total_trades = len(trades)
     if total_trades == 0:
         return 0.0, 0.0, 0, False
-        
+
     wins = sum(1 for t in trades if t["success"])
     win_rate = wins / total_trades * 100.0
     avg_profit = sum(t["profit"] for t in trades) / total_trades * 100.0
     is_robust = total_trades >= 5
-    
+
     return win_rate, avg_profit, total_trades, is_robust
 
 

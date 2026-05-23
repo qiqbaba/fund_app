@@ -163,14 +163,35 @@ class FundHistoryDB:
 
     def _db_worker(self):
         """后台数据库写库守护线程核心循环"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        conn = None
+        cursor = None
         
-        # 启用 WAL 模式以最大化并发读写性能
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.Error:
-            pass
+        def reconnect():
+            nonlocal conn, cursor
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            print("[FundHistoryDB-Worker] 正在重新连接数据库...")
+            retry_interval = 2.0
+            while True:
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("PRAGMA journal_mode=WAL")
+                    except sqlite3.Error:
+                        pass
+                    print("[FundHistoryDB-Worker] 数据库连接重连成功！")
+                    break
+                except sqlite3.Error as e:
+                    print(f"[FundHistoryDB-Worker] 数据库连接失败: {e}，将在 {retry_interval} 秒后重试...")
+                    time.sleep(retry_interval)
+                    retry_interval = min(retry_interval * 1.5, 30.0)
+
+        # 初始连接
+        reconnect()
             
         while True:
             try:
@@ -179,19 +200,36 @@ class FundHistoryDB:
                     break
                 
                 func_name, args, kwargs, reply_queue = task
-                try:
-                    sync_func = getattr(self, f"_sync_{func_name}")
-                    result = sync_func(conn, cursor, *args, **kwargs)
-                    reply_queue.put((True, result))
-                except Exception as e:
-                    reply_queue.put((False, e))
-                finally:
-                    self.task_queue.task_done()
+                
+                max_retries = 3
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        sync_func = getattr(self, f"_sync_{func_name}")
+                        result = sync_func(conn, cursor, *args, **kwargs)
+                        reply_queue.put((True, result))
+                        break  # 执行成功，跳出重试循环
+                    except sqlite3.Error as se:
+                        retry_count += 1
+                        print(f"[FundHistoryDB-Worker SqliteError] 执行 {func_name} 失败 (第 {retry_count}/{max_retries} 次尝试): {se}")
+                        # 优雅关闭旧连接并自动休眠重连
+                        reconnect()
+                        if retry_count >= max_retries:
+                            reply_queue.put((False, se))
+                    except Exception as e:
+                        # 其它非 sqlite3.Error 异常，例如 Python 逻辑错误，不重试，直接返回失败
+                        reply_queue.put((False, e))
+                        break
+                self.task_queue.task_done()
             except Exception as e:
                 print(f"[FundHistoryDB-Worker Exception] {e}")
                 time.sleep(0.1)
                 
-        conn.close()
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _submit_task(self, func_name, *args, **kwargs):
         """提交任务到队列，并同步阻塞等待返回结果"""
@@ -203,11 +241,17 @@ class FundHistoryDB:
         else:
             raise val
 
+    def _read_query(self, func, *args, **kwargs):
+        """在前台线程使用临时连接就地执行只读查询"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            return func(conn, cursor, *args, **kwargs)
+
     # ==================== 外部公开的 API 接口 ====================
 
     def get_history(self, fund_code):
         """获取基金的历史净值数据"""
-        return self._submit_task('get_history', fund_code)
+        return self._read_query(self._sync_get_history, fund_code)
 
     def save_history(self, fund_code, jzrq, navs, dates=None):
         """保存或更新基金的历史净值数据"""
@@ -223,7 +267,7 @@ class FundHistoryDB:
 
     def get_all_fund_codes(self):
         """获取数据库中所有基金代码"""
-        return self._submit_task('get_all_fund_codes')
+        return self._read_query(self._sync_get_all_fund_codes)
 
     def save_optimal_strategy(self, fund_code, fund_name, buy_days, buy_drop, target_profit, hold_min, hold_max, win_rate, total_trades, avg_profit):
         """保存或更新基金的最优策略参数寻优结果"""
@@ -234,15 +278,15 @@ class FundHistoryDB:
 
     def get_optimal_strategy(self, fund_code):
         """获取基金的最优策略参数"""
-        return self._submit_task('get_optimal_strategy', fund_code)
+        return self._read_query(self._sync_get_optimal_strategy, fund_code)
 
     def get_all_optimal_strategies(self):
         """获取所有有最优策略参数的基金"""
-        return self._submit_task('get_all_optimal_strategies')
+        return self._read_query(self._sync_get_all_optimal_strategies)
 
     def get_all_history(self):
         """一次性批量获取所有基金的历史净值数据（超高性能预加载）"""
-        return self._submit_task('get_all_history')
+        return self._read_query(self._sync_get_all_history)
 
     # ==================== 底层由 Worker 线程执行的同步实现 ====================
 

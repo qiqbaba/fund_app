@@ -2,6 +2,7 @@ from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QRect, QSize, Q
 from PySide6.QtGui import QColor, QBrush, QFont, QTextDocument, QPainter, QPen, QPolygonF, QLinearGradient
 from PySide6.QtWidgets import (QStyledItemDelegate, QCheckBox, QWidget, QVBoxLayout, 
                                QLineEdit, QPushButton, QHBoxLayout, QStyle)
+from qfluentwidgets import isDarkTheme, TableItemDelegate
 
 
 class FundTableModel(QAbstractTableModel):
@@ -255,7 +256,7 @@ class FundFilterProxyModel(QSortFilterProxyModel):
             source.sort(column, order)
 
 
-class FundTableDelegate(QStyledItemDelegate):
+class FundTableDelegate(TableItemDelegate):
     """基金表格代理 - 用于自定义渲染和换行"""
     
     def __init__(self, table_type="my_fund", parent=None):
@@ -319,7 +320,7 @@ class FundTableDelegate(QStyledItemDelegate):
             else:
                 is_pinned = row_data.get("_is_pinned", False)
                 if is_pinned and header != "操作":
-                    bg_color = QColor("#f0f7ff") 
+                    bg_color = QColor("#1e293b") if isDarkTheme() else QColor("#f0f7ff") 
         
         if bg_color:
             painter.fillRect(option.rect, bg_color)
