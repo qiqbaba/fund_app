@@ -7,6 +7,11 @@ import requests
 import threading
 import sys
 
+# 确保项目根目录在 sys.path 中，以防直接运行此文件时找不到 core 模块
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # 临时屏蔽第三方库 qfluentwidgets 导入时的广告打印
 class _SilenceStdout:
     def __enter__(self):
@@ -173,16 +178,39 @@ class FakeStatusBar:
                 parent=self.parent
             )
         else:
-            self.parent.setStatusTip(text)
+            InfoBar.info(
+                title="提示",
+                content=text,
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration,
+                parent=self.parent
+            )
 
 class FundApp(MSFluentWindow):
-    def __init__(self):
+    def __init__(self, splash=None):
         super().__init__()
         self.setWindowTitle("场外基金深度监控")
-        self.resize(1400, 600)
         
+        # 尝试从配置中恢复上次的窗口位置与大小；若不存在，则使用默认大小并完全居中
+        from PySide6.QtCore import QSettings
+        settings = QSettings("MyCompany", "FundApp")
+        saved_geometry = settings.value("geometry")
+        if saved_geometry:
+            self.restoreGeometry(saved_geometry)
+        else:
+            self.resize(1400, 600)
+            from PySide6.QtWidgets import QApplication
+            screen = QApplication.primaryScreen().geometry()
+            self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
+        
+        if splash:
+            splash.set_progress(15, "正在加载系统配置文件...")
         self.config = self.load_config()
         
+        if splash:
+            splash.set_progress(30, "正在初始化应用主题...")
         # 加载并应用持久化主题设置
         from qfluentwidgets import setTheme, Theme
         theme_str = self.config.get("theme", "Light")
@@ -201,26 +229,59 @@ class FundApp(MSFluentWindow):
         self.is_refreshing = False
         self._status_bar = FakeStatusBar(self)
         
+        if splash:
+            splash.set_progress(50, "正在连接并初始化本地数据库...")
         # 初始化数据库（不再在主线程同步循环加载，改为后台子线程极速批量预载入，耗时仅需数十毫秒，实现秒开且不卡加载）
         self.db = FundHistoryDB()
+        
+        # 用 Event 标记预加载是否完成，供首次刷新等待
+        self._preload_done = threading.Event()
         
         def preload_history():
             try:
                 all_history = self.db.get_all_history()
                 if all_history:
                     self.history_cache.update(all_history)
+                    print(f"[Preload] 历史缓存预加载完成，共 {len(all_history)} 只基金")
             except Exception as e:
                 print(f"[Preload Warning] 批量预加载历史数据失败: {e}")
+            finally:
+                # 无论成功或失败，都标记为完成，避免首次刷新无限等待
+                self._preload_done.set()
                 
-        threading.Thread(target=preload_history, daemon=True).start()
+        threading.Thread(target=preload_history, daemon=True, name="HistoryPreloader").start()
         
         self.refresh_timer = QTimer()
         self.refresh_interval = 60000 
         self.refresh_timer.timeout.connect(self.refresh_data)
 
+        if splash:
+            splash.set_progress(70, "正在构建主界面组件及布局...")
         self.init_ui()
+        
+        if splash:
+            splash.set_progress(85, "正在读取本地基金字典缓存...")
         self.load_all_funds_dict() 
-        self.refresh_data()
+        
+        if splash:
+            splash.set_progress(95, "正在等待本地历史缓存就绪...")
+        
+        # 首次刷新：在主线程使用定时器轮询检查本地缓存预加载状态，既不卡顿启动闪屏，又绝对安全地在主线程切入刷新
+        self._check_count = 0
+        def check_preload_and_refresh():
+            self._check_count += 1
+            # 最多等待 800ms (16 * 50ms)，超时强制刷新以防卡死
+            if self._preload_done.is_set() or self._check_count >= 16:
+                if self._check_count >= 16 and not self._preload_done.is_set():
+                    print("[Preload] 历史预加载超时，强制触发首次刷新")
+                self.refresh_data()
+            else:
+                QTimer.singleShot(50, check_preload_and_refresh)
+                
+        QTimer.singleShot(50, check_preload_and_refresh)
+        
+        if splash:
+            splash.set_progress(100, "加载完成，正在开启主窗口...")
 
     def statusBar(self):
         return self._status_bar
@@ -361,8 +422,8 @@ class FundApp(MSFluentWindow):
             self.headers.append(f"近{m}月\n百分位")
             self.val_headers.append(f"近{m}月\n百分位")
             
-        self.headers.extend(["趋势", "更新时间", "操作"])
-        self.val_headers.extend(["趋势", "更新时间", "操作"])
+        self.headers.extend(["趋势", "更新时间", "操作", "数据源"])
+        self.val_headers.extend(["趋势", "更新时间", "操作", "数据源"])
         
         # 兼容性升级 hidden_columns 为分 Tab 字典格式
         hidden_cols_config = self.config.get("hidden_columns", {})
@@ -646,20 +707,32 @@ class FundApp(MSFluentWindow):
     def load_all_funds_dict(self):
         self.all_funds_code_to_name = {} 
         self.fund_search_list = []
-        def fetch_dict():
-            try:
-                res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=10)
-                match = re.search(r'var r = (\[.*\]);', res.text)
-                if match:
-                    search_list = []
-                    for item in json.loads(match.group(1)):
-                        self.all_funds_dict[item[2]] = item[0] 
-                        self.all_funds_code_to_name[item[0]] = item[2]
-                        # (代码, 拼音缩写, 名称, 类型, 全拼音)
-                        search_list.append((item[0], item[1], item[2], item[3], item[4]))
-                    self.fund_search_list = search_list
-            except: pass
-        threading.Thread(target=fetch_dict, daemon=True).start()
+        
+        # 1. 启动秒开：首选同步加载本地缓存
+        from core.utils import load_funds_registry_from_cache, update_funds_registry_in_background
+        cached_data, _ = load_funds_registry_from_cache()
+        if cached_data:
+            for item in cached_data:
+                self.all_funds_dict[item[2]] = item[0]
+                self.all_funds_code_to_name[item[0]] = item[2]
+                # (代码, 拼音缩写, 名称, 类型, 全拼音)
+                self.fund_search_list.append((item[0], item[1], item[2], item[3], item[4]))
+            
+        # 2. 启动后台线程异步检查与下载更新
+        def on_registry_updated(new_dict, new_code_to_name, new_search_list):
+            self.all_funds_dict.clear()
+            self.all_funds_dict.update(new_dict)
+            self.all_funds_code_to_name.clear()
+            self.all_funds_code_to_name.update(new_code_to_name)
+            self.fund_search_list.clear()
+            self.fund_search_list.extend(new_search_list)
+            
+        update_funds_registry_in_background(
+            all_funds_dict=self.all_funds_dict,
+            all_funds_code_to_name=self.all_funds_code_to_name,
+            fund_search_list=self.fund_search_list,
+            callback=on_registry_updated
+        )
 
     def find_code_by_name(self, name_query):
         for name, code in self.all_funds_dict.items():
@@ -1156,6 +1229,10 @@ class FundApp(MSFluentWindow):
                 tab.btn_refresh.setEnabled(False)
 
         self.latest_data_time = ""  # 重置数据源时间
+        # 重置两个榜单的就绪标志，只有两者都完成时才合并启动 FundDataFetcher
+        self._ranking_ready = False
+        self._valuation_ready = False
+
         
         # 获取基金列表，并按照置顶状态进行初始排序（置顶在前）
         funds = sorted(list(self.config.get("funds_info", {}).keys()), 
@@ -1251,7 +1328,8 @@ class FundApp(MSFluentWindow):
         self.valuation_fetcher.valuation_signal.connect(self.on_valuation_fetched)
         self.valuation_fetcher.start()
         
-        self.statusBar().showMessage("正在抓取市场及估值数据...")
+        self.statusBar().showMessage("✅ 正在抓取市场及估值数据...")
+
 
     def update_other_funds_table(self):
         """更新'其他'Tab的基金列表，包含有最优参数但不在前4个Tab中的基金"""
@@ -1379,25 +1457,9 @@ class FundApp(MSFluentWindow):
             self.model3.sort(self.table3.horizontalHeader().sortIndicatorSection(), 
                              self.table3.horizontalHeader().sortIndicatorOrder())
         
-        # 启动数据抓取（合并之前的自选和排行榜）
-        my_funds = list(self.config.get("funds_info", {}).keys())
-        market_codes = [self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows))]
-        valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
-        
-        other_codes = self.update_other_funds_table()
-        
-        cycle_codes = self.get_cycle_codes()
-        all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes + cycle_codes))
-        
-        if hasattr(self, "fetcher") and self.fetcher.isRunning():
-            self.fetcher.requestInterruption()
-            self.fetcher.wait()
-
-        self.fetcher = FundDataFetcher(all_fetch_codes, self.config, self.history_cache, self.all_funds_code_to_name, self.db)
-        self.fetcher.update_signal.connect(self.dispatch_table_update)
-        self.fetcher.error_signal.connect(self.dispatch_table_error)
-        self.fetcher.finish_signal.connect(self.on_fetch_finish)
-        self.fetcher.start()
+        # 标记估值榜就绪，等排行榜也就绪后再合并启动 FundDataFetcher
+        self._valuation_ready = True
+        self._try_start_fund_fetcher()
 
     def on_ranking_fetched(self, top_list, bot_list, is_success):
         if not is_success:
@@ -1451,14 +1513,22 @@ class FundApp(MSFluentWindow):
             self.model2.sort(self.table2.horizontalHeader().sortIndicatorSection(), 
                              self.table2.horizontalHeader().sortIndicatorOrder())
         
+        # 标记排行榜就绪，等估值榜也就绪后再合并启动 FundDataFetcher
+        self._ranking_ready = True
+        self._try_start_fund_fetcher()
+
+    def _try_start_fund_fetcher(self):
+        """当排行榜和估值榜都就绪后，才合并一次性启动 FundDataFetcher，避免竞争条件导致数据丢失"""
+        if not getattr(self, '_ranking_ready', False) or not getattr(self, '_valuation_ready', False):
+            return  # 两个榜单尚未全部就绪，继续等待
+
         my_funds = list(self.config.get("funds_info", {}).keys())
+        market_codes = [self.model2.data_rows[i].get("基金代码") for i in range(len(self.model2.data_rows))]
         valuation_codes = [self.model3.data_rows[i].get("基金代码") for i in range(len(self.model3.data_rows))]
-        
         other_codes = self.update_other_funds_table()
-        
         cycle_codes = self.get_cycle_codes()
         all_fetch_codes = list(set(my_funds + market_codes + valuation_codes + other_codes + cycle_codes))
-        
+
         if hasattr(self, "fetcher") and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
             self.fetcher.wait()
@@ -1563,7 +1633,7 @@ class FundApp(MSFluentWindow):
         if is_my_fund:
             held_amount_str = self.config["funds_info"].get(code, {}).get("amount", "")
             try: held_amount = float(held_amount_str)
-            except ValueError: held_amount = 0.0
+            except (ValueError, TypeError): held_amount = 0.0
 
             try:
                 val = float(change_str)
@@ -1604,7 +1674,19 @@ class FundApp(MSFluentWindow):
             else:
                 row_data[header] = "-"
 
-        row_data["更新时间"] = data.get('gztime', '')
+        gztime_raw = data.get('gztime', '')
+        if gztime_raw:
+            import re
+            source_match = re.search(r'\[(.*?)\]$', gztime_raw)
+            if source_match:
+                row_data["更新时间"] = gztime_raw[:source_match.start()].strip()
+                row_data["数据源"] = source_match.group(1)
+            else:
+                row_data["更新时间"] = gztime_raw
+                row_data["数据源"] = data.get('source', '-')
+        else:
+            row_data["更新时间"] = "-"
+            row_data["数据源"] = "-"
         
         # 操作列
         if is_my_fund:
@@ -1958,6 +2040,11 @@ class FundApp(MSFluentWindow):
         """
         接管主窗口关闭事件，优雅停止所有活跃后台线程，确保数据写入完整且零报错退出。
         """
+        # 保存当前窗口的位置与大小几何状态
+        from PySide6.QtCore import QSettings
+        settings = QSettings("MyCompany", "FundApp")
+        settings.setValue("geometry", self.saveGeometry())
+
         # 1. 停止刷新定时器
         if hasattr(self, 'refresh_timer') and self.refresh_timer.isActive():
             self.refresh_timer.stop()

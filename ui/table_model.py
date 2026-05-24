@@ -84,10 +84,12 @@ class FundTableModel(QAbstractTableModel):
         try:
             return (2, float(cell_str))
         except ValueError:
-            # 处理多行数据（如 "持有金额\n收益率"）
+            # 处理多行数据（如 "持有金额\n收益率"、"今日收益/\n收益率"）
             first_line = cell_str.split('\n')[0].strip()
+            if first_line == '-' or first_line == '':
+                return (0, 0.0)  # 无数据行统一归为最低优先级，避免与数字行混排
             try:
-                return (2, float(first_line.replace("%", "")))
+                return (2, float(first_line.replace("%", "").replace("+", "")))
             except ValueError:
                 return (1, cell_str)
     
@@ -313,12 +315,12 @@ class FundTableDelegate(TableItemDelegate):
         # 检查是否触发了买入抄底信号
         is_buy_triggered = self._is_buy_triggered(model, index.row())
         row_data = model.get_row_data(index.row())
+        is_pinned = row_data.get("_is_pinned", False)
             
         if not bg_color:
             if is_buy_triggered and header == "最优参数":
                 bg_color = QColor(46, 213, 115, 45)  # 优雅的绿发光透明色
             else:
-                is_pinned = row_data.get("_is_pinned", False)
                 if is_pinned and header != "操作":
                     bg_color = QColor("#1e293b") if isDarkTheme() else QColor("#f0f7ff") 
         

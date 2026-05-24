@@ -168,12 +168,16 @@ class FundHistoryDB:
         
         def reconnect():
             nonlocal conn, cursor
+            is_initial = (conn is None)
             if conn:
                 try:
                     conn.close()
                 except Exception:
                     pass
-            print("[FundHistoryDB-Worker] 正在重新连接数据库...")
+            
+            if not is_initial:
+                print("[FundHistoryDB-Worker] 正在重新连接数据库...")
+                
             retry_interval = 2.0
             while True:
                 try:
@@ -183,7 +187,9 @@ class FundHistoryDB:
                         cursor.execute("PRAGMA journal_mode=WAL")
                     except sqlite3.Error:
                         pass
-                    print("[FundHistoryDB-Worker] 数据库连接重连成功！")
+                    
+                    if not is_initial:
+                        print("[FundHistoryDB-Worker] 数据库连接重连成功！")
                     break
                 except sqlite3.Error as e:
                     print(f"[FundHistoryDB-Worker] 数据库连接失败: {e}，将在 {retry_interval} 秒后重试...")

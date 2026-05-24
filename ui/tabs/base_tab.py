@@ -159,19 +159,22 @@ class BaseFundTableTab(QWidget):
         self.table.setColumnWidth(9, 75)
         self.table.setColumnWidth(10, 60)  # 今日收益/\n收益率
         
-        # 批量设置指标列宽度
-        for col_idx in range(11, len(self.headers) - 3):
+        # 批量设置指标列宽度 (除最后4列外的动态列)
+        for col_idx in range(11, len(self.headers) - 4):
             self.table.setColumnWidth(col_idx, 60)
             
-        trend_col_idx = len(self.headers) - 3
-        self.table.setColumnWidth(trend_col_idx, 80)
+        trend_col_idx = len(self.headers) - 4
+        self.table.setColumnWidth(trend_col_idx, 80)   # 趋势
         
-        time_col_idx = len(self.headers) - 2
-        self.table.setColumnWidth(time_col_idx, 130)
+        time_col_idx = len(self.headers) - 3
+        self.table.setColumnWidth(time_col_idx, 130)  # 更新时间
         
-        action_col_idx = len(self.headers) - 1
+        action_col_idx = len(self.headers) - 2
         self.table.horizontalHeader().setSectionResizeMode(action_col_idx, QHeaderView.Fixed)
-        self.table.setColumnWidth(action_col_idx, 60)
+        self.table.setColumnWidth(action_col_idx, 60)   # 操作
+        
+        source_col_idx = len(self.headers) - 1
+        self.table.setColumnWidth(source_col_idx, 80)   # 数据源
 
     # ------------------ 数据交互底层接口映射 (对外屏蔽 Proxy/Model 细节) ------------------
     def clear_all(self):

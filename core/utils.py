@@ -111,3 +111,148 @@ def extract_fund_sector(name, code=None):
         return clean_name if len(clean_name) <= 8 else clean_name[:6]
     
     return name[:6] if len(name) >= 2 else "未知"
+
+
+# --- 基金全市场字典缓存与静默更新机制 ---
+
+import os
+import json
+import time
+import requests
+import threading
+
+def get_funds_registry_path():
+    """获取本地缓存基金数据库字典文件的绝对路径 (项目根目录)"""
+    core_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(core_dir)
+    return os.path.join(project_root, "funds_registry_cache.json")
+
+def load_funds_registry_from_cache():
+    """
+    尝试从本地缓存中加载基金字典数据
+    返回: tuple (data_list, metadata_dict)
+    """
+    cache_path = get_funds_registry_path()
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+                if isinstance(payload, dict) and "data" in payload:
+                    return payload["data"], payload
+                elif isinstance(payload, list):
+                    # 兼容可能的老格式或直接是列表
+                    return payload, {"updated_at": os.path.getmtime(cache_path)}
+        except Exception:
+            pass
+    return None, None
+
+def save_funds_registry_to_cache(data, last_modified_header=None, content_length=None):
+    """
+    将基金字典数据保存到本地缓存
+    """
+    cache_path = get_funds_registry_path()
+    payload = {
+        "updated_at": time.time(),
+        "last_modified_header": last_modified_header,
+        "content_length": content_length,
+        "data": data
+    }
+    try:
+        # 使用临时文件写入并重命名，防止进程崩溃导致文件损坏
+        temp_path = cache_path + ".tmp"
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        os.rename(temp_path, cache_path)
+        return True
+    except Exception:
+        if os.path.exists(temp_path):
+            try: os.remove(temp_path)
+            except: pass
+        return False
+
+def update_funds_registry_in_background(all_funds_dict=None, all_funds_code_to_name=None, fund_search_list=None, callback=None):
+    """
+    在后台低优先级守护线程下载并覆写本地缓存字典
+    """
+    def task():
+        url = "http://fund.eastmoney.com/js/fundcode_search.js"
+        cache_path = get_funds_registry_path()
+        data, metadata = load_funds_registry_from_cache()
+        
+        need_download = False
+        last_modified = None
+        content_length = None
+        
+        # 1. 没有缓存则必须下载
+        if not data:
+            need_download = True
+        else:
+            # 2. 检查本地最后修改时间是否超过 7 天
+            mtime = os.path.getmtime(cache_path) if os.path.exists(cache_path) else 0
+            if time.time() - mtime > 7 * 24 * 3600:
+                need_download = True
+            else:
+                # 3. 发送轻量级 HEAD 请求检测更新
+                try:
+                    res = requests.head(url, timeout=5)
+                    if res.status_code == 200:
+                        last_modified = res.headers.get("Last-Modified")
+                        content_length = res.headers.get("Content-Length")
+                        if content_length is not None:
+                            try: content_length = int(content_length)
+                            except: pass
+                        
+                        cached_lm = metadata.get("last_modified_header")
+                        cached_cl = metadata.get("content_length")
+                        
+                        if last_modified != cached_lm or content_length != cached_cl:
+                            need_download = True
+                except Exception:
+                    # 离线或网络异常直接捕获静默忽略
+                    pass
+
+        if need_download:
+            try:
+                res = requests.get(url, timeout=10)
+                if res.status_code == 200:
+                    match = re.search(r'var r = (\[.*\]);', res.text)
+                    if match:
+                        new_data = json.loads(match.group(1))
+                        last_modified = res.headers.get("Last-Modified") or last_modified
+                        content_length = res.headers.get("Content-Length")
+                        if content_length is not None:
+                            try: content_length = int(content_length)
+                            except: pass
+                            
+                        save_funds_registry_to_cache(new_data, last_modified, content_length)
+                        
+                        # 转换并解析数据结构
+                        temp_all_funds_dict = {}
+                        temp_all_funds_code_to_name = {}
+                        temp_fund_search_list = []
+                        for item in new_data:
+                            temp_all_funds_dict[item[2]] = item[0]
+                            temp_all_funds_code_to_name[item[0]] = item[2]
+                            temp_fund_search_list.append((item[0], item[1], item[2], item[3], item[4]))
+                            
+                        # 在内存变量有效时做原地更新
+                        if all_funds_dict is not None:
+                            all_funds_dict.clear()
+                            all_funds_dict.update(temp_all_funds_dict)
+                        if all_funds_code_to_name is not None:
+                            all_funds_code_to_name.clear()
+                            all_funds_code_to_name.update(temp_all_funds_code_to_name)
+                        if fund_search_list is not None:
+                            fund_search_list.clear()
+                            fund_search_list.extend(temp_fund_search_list)
+                            
+                        if callback:
+                            callback(temp_all_funds_dict, temp_all_funds_code_to_name, temp_fund_search_list)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=task, daemon=True)
+    t.start()
+

@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from core.db_manager import FundHistoryDB
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 import numpy as np
 
 class RankingFetcher(QThread):
@@ -21,15 +22,23 @@ class RankingFetcher(QThread):
 
     def run(self):
         if not self.code_to_name_dict:
-            try:
-                res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=5)
-                if self.isInterruptionRequested(): return
-                match = re.search(r'var r = (\[.*\]);', res.text)
-                if match:
-                    for item in json.loads(match.group(1)):
-                        if self.isInterruptionRequested(): return
-                        self.code_to_name_dict[item[0]] = item[2]
-            except: pass
+            # 优先从本地缓存加载基金字典
+            from core.utils import load_funds_registry_from_cache
+            cached_data, _ = load_funds_registry_from_cache()
+            if cached_data:
+                for item in cached_data:
+                    self.code_to_name_dict[item[0]] = item[2]
+            else:
+                # 兜底：本地缓存不存在时才发起 HTTP 请求
+                try:
+                    res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=5)
+                    if self.isInterruptionRequested(): return
+                    match = re.search(r'var r = (\[.*\]);', res.text)
+                    if match:
+                        for item in json.loads(match.group(1)):
+                            if self.isInterruptionRequested(): return
+                            self.code_to_name_dict[item[0]] = item[2]
+                except: pass
 
         if self.isInterruptionRequested(): return
 
@@ -306,7 +315,11 @@ class FundDataFetcher(QThread):
             
             for future in concurrent.futures.as_completed(future_to_code):
                 if self.isInterruptionRequested():
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    import sys
+                    if sys.version_info >= (3, 9):
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    else:
+                        executor.shutdown(wait=False)
                     break
                     
                 try:
@@ -341,13 +354,21 @@ class ValuationFetcher(QThread):
             time.sleep(0.1)
             
         if not self.all_funds_dict:
-            try:
-                res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=5)
-                match = re.search(r'var r = (\[.*\]);', res.text)
-                if match:
-                    for item in json.loads(match.group(1)):
-                        self.all_funds_dict[item[2]] = item[0]
-            except: pass
+            # 优先从本地缓存加载基金字典
+            from core.utils import load_funds_registry_from_cache
+            cached_data, _ = load_funds_registry_from_cache()
+            if cached_data:
+                for item in cached_data:
+                    self.all_funds_dict[item[2]] = item[0]
+            else:
+                # 兜底：本地缓存不存在时才发起 HTTP 请求
+                try:
+                    res = requests.get("http://fund.eastmoney.com/js/fundcode_search.js", timeout=5)
+                    match = re.search(r'var r = (\[.*\]);', res.text)
+                    if match:
+                        for item in json.loads(match.group(1)):
+                            self.all_funds_dict[item[2]] = item[0]
+                except: pass
 
         if used_fund_codes is None:
             used_fund_codes = set()
@@ -643,6 +664,9 @@ def run_backtest(all_navs, buy_days, buy_drop_pct, target_profit_pct, hold_max=9
         sell_nav = buy_nav
 
         limit = min(hold_max, n - 1 - i)
+        if limit == 0:
+            idx_ptr += 1
+            continue
         for j in range(1, limit + 1):
             current_nav = all_navs[i + j]  # 直接原位访问 Python List，极速！
             profit = (current_nav - buy_nav) / buy_nav
@@ -690,7 +714,7 @@ def run_backtest(all_navs, buy_days, buy_drop_pct, target_profit_pct, hold_max=9
     return win_rate, avg_profit, total_trades, is_robust
 
 
-def optimize_via_genetic_algorithm(all_navs, progress_callback=None, interrupted_callback=None):
+def optimize_via_genetic_algorithm(all_navs, progress_callback=None, interrupted_callback=None, cancel_flag=None):
     """
     使用遗传算法（Genetic Algorithm）进行基金策略参数寻优。
     """
@@ -755,6 +779,9 @@ def optimize_via_genetic_algorithm(all_navs, progress_callback=None, interrupted
     # 2. 进化迭代
     for gen in range(generations):
         if interrupted_callback and interrupted_callback():
+            return None
+            
+        if cancel_flag is not None and cancel_flag.value:
             return None
             
         # 评估所有个体
@@ -899,11 +926,11 @@ class OptimalStrategyFinder(QThread):
         })
 
 
-def optimize_single_fund_task(code, name, all_navs):
+def optimize_single_fund_task(code, name, all_navs, cancel_flag=None):
     """
     单只基金策略参数寻优计算任务（在子进程中运行的纯计算）
     """
-    best = optimize_via_genetic_algorithm(all_navs)
+    best = optimize_via_genetic_algorithm(all_navs, cancel_flag=cancel_flag)
     if not best:
         return None
         
@@ -965,30 +992,38 @@ class BatchOptimalStrategyFinder(QThread):
         # 2. 启动 ProcessPoolExecutor 多进程执行纯数学计算
         max_workers = min(os.cpu_count() or 4, to_compute_total)
         
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # 提交任务
-            future_to_name = {
-                executor.submit(optimize_single_fund_task, code, name, navs): name
-                for code, name, navs in tasks
-            }
+        with multiprocessing.Manager() as manager:
+            cancel_flag = manager.Value('b', False)
             
-            completed_count = 0
-            for future in as_completed(future_to_name):
-                if self.isInterruptionRequested():
-                    # 用户取消了任务，强制关闭进程池
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # 提交任务
+                future_to_name = {
+                    executor.submit(optimize_single_fund_task, code, name, navs, cancel_flag): name
+                    for code, name, navs in tasks
+                }
+                
+                completed_count = 0
+                for future in as_completed(future_to_name):
+                    if self.isInterruptionRequested():
+                        # 用户取消了任务，设置标志位通知子进程自毁，并强制关闭进程池
+                        cancel_flag.value = True
+                        import sys
+                        if sys.version_info >= (3, 9):
+                            executor.shutdown(wait=False, cancel_futures=True)
+                        else:
+                            executor.shutdown(wait=False)
+                        return
                     
-                name = future_to_name[future]
-                try:
-                    res = future.result()
-                    if res:
-                        results_list.append(res)
-                except Exception as e:
-                    print(f"[多进程寻优异常] 基金 {name} 计算出错: {e}")
-                    
-                completed_count += 1
-                self.progress_signal.emit(completed_count, to_compute_total, name)
+                    name = future_to_name[future]
+                    try:
+                        res = future.result()
+                        if res:
+                            results_list.append(res)
+                    except Exception as e:
+                        print(f"[多进程寻优异常] 基金 {name} 计算出错: {e}")
+                        
+                    completed_count += 1
+                    self.progress_signal.emit(completed_count, to_compute_total, name)
                 
         # 3. 计算完毕后，在当前 QThread 线程中单线程顺序写入数据库，规避并发写冲突
         for res in results_list:
