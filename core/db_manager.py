@@ -156,9 +156,38 @@ class FundHistoryDB:
                 )
             ''')
             
+            # 创建轻量级元数据表以记录清理时间等信息
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            
             # 自动清理未来日期的历史数据记录（防止脏数据进入系统污染状态栏或报表）
-            cursor.execute("DELETE FROM fund_nav_detail WHERE jzrq > date('now', 'localtime')")
-            cursor.execute("DELETE FROM fund_history WHERE jzrq > date('now', 'localtime')")
+            # 优化：引入"上次清理时间"的标记，若距上次清理不足 24 小时则跳过。
+            cursor.execute("SELECT value FROM app_meta WHERE key = 'last_cleanup_time'")
+            row = cursor.fetchone()
+            
+            should_cleanup = True
+            current_time = time.time()
+            if row:
+                try:
+                    last_cleanup = float(row[0])
+                    if current_time - last_cleanup < 86400: # 24 小时 = 86400 秒
+                        should_cleanup = False
+                except ValueError:
+                    pass
+            
+            if should_cleanup:
+                print("[FundHistoryDB] 距离上次清理已超过 24 小时或首次启动，正在执行未来日期数据清理...")
+                cursor.execute("DELETE FROM fund_nav_detail WHERE jzrq > date('now', 'localtime')")
+                cursor.execute("DELETE FROM fund_history WHERE jzrq > date('now', 'localtime')")
+                cursor.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('last_cleanup_time', ?)", (str(current_time),))
+                print("[FundHistoryDB] 未来日期数据清理完成。")
+            else:
+                print("[FundHistoryDB] 距离上次清理不足 24 小时，跳过未来日期数据清理。")
+                
             conn.commit()
 
     def _db_worker(self):

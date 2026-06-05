@@ -31,7 +31,6 @@ if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import qInstallMessageHandler
     from ui.splash_screen import StartupSplashScreen
-    from ui.main_window import FundApp
     
     # 安装消息拦截器以过滤无用警告
     qInstallMessageHandler(qt_message_handler)
@@ -41,6 +40,14 @@ if __name__ == "__main__":
     # 实例化并展示具有圆角质感的启动闪屏
     splash = StartupSplashScreen()
     splash.show()
+    
+    # 强制让应用优先渲染并展示闪屏，解决启动白屏/无响应问题
+    app.processEvents()
+    
+    splash.set_progress(5, "正在加载核心引擎与UI组件库...")
+    
+    # 延迟导入重量级模块，实现闪屏“秒开”
+    from ui.main_window import FundApp
     
     # 启动应用主逻辑，传入闪屏实例以实时更新加载状态
     window = FundApp(splash=splash)

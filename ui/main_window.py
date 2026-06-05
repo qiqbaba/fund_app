@@ -27,7 +27,7 @@ class _SilenceStdout:
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                                QMessageBox, QListWidget, QListWidgetItem,
                                QMenu, QStackedWidget, QLabel)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QBrush, QFont, QAction
 
 with _SilenceStdout():
@@ -189,6 +189,8 @@ class FakeStatusBar:
             )
 
 class FundApp(MSFluentWindow):
+    registry_updated_signal = Signal(dict, dict, list)
+
     def __init__(self, splash=None):
         super().__init__()
         self.setWindowTitle("场外基金深度监控")
@@ -708,31 +710,46 @@ class FundApp(MSFluentWindow):
         self.all_funds_code_to_name = {} 
         self.fund_search_list = []
         
-        # 1. 启动秒开：首选同步加载本地缓存
-        from core.utils import load_funds_registry_from_cache, update_funds_registry_in_background
-        cached_data, _ = load_funds_registry_from_cache()
-        if cached_data:
-            for item in cached_data:
-                self.all_funds_dict[item[2]] = item[0]
-                self.all_funds_code_to_name[item[0]] = item[2]
-                # (代码, 拼音缩写, 名称, 类型, 全拼音)
-                self.fund_search_list.append((item[0], item[1], item[2], item[3], item[4]))
-            
-        # 2. 启动后台线程异步检查与下载更新
-        def on_registry_updated(new_dict, new_code_to_name, new_search_list):
+        # 1. 异步启动本地缓存加载线程，实现极速“秒开”，UI 启动零卡顿
+        from core.threads import FundRegistryLoader
+        self.registry_loader = FundRegistryLoader()
+        
+        def on_cache_loaded(loaded_dict, loaded_code_to_name, loaded_search_list):
             self.all_funds_dict.clear()
-            self.all_funds_dict.update(new_dict)
+            self.all_funds_dict.update(loaded_dict)
             self.all_funds_code_to_name.clear()
-            self.all_funds_code_to_name.update(new_code_to_name)
+            self.all_funds_code_to_name.update(loaded_code_to_name)
             self.fund_search_list.clear()
-            self.fund_search_list.extend(new_search_list)
+            self.fund_search_list.extend(loaded_search_list)
             
-        update_funds_registry_in_background(
-            all_funds_dict=self.all_funds_dict,
-            all_funds_code_to_name=self.all_funds_code_to_name,
-            fund_search_list=self.fund_search_list,
-            callback=on_registry_updated
-        )
+            # 2. 本地缓存加载完成后，建立网络更新信号绑定并启动静默检查
+            self.registry_updated_signal.connect(self.on_registry_updated_safe)
+            
+            def on_registry_updated(new_dict, new_code_to_name, new_search_list):
+                # 不在后台线程直接修改主线程的数据，利用自定义信号安全发送回主线程
+                self.registry_updated_signal.emit(new_dict, new_code_to_name, new_search_list)
+                
+            from core.utils import update_funds_registry_in_background
+            update_funds_registry_in_background(
+                all_funds_dict=None,  # 传入 None 以规避后台线程原地更新
+                all_funds_code_to_name=None,
+                fund_search_list=None,
+                callback=on_registry_updated
+            )
+            
+        self.registry_loader.registry_loaded_signal.connect(on_cache_loaded)
+        self.registry_loader.start()
+
+    def on_registry_updated_safe(self, new_dict, new_code_to_name, new_search_list):
+        """主线程安全槽：网络获取到的最新字典数据在此安全并入内存，完全避免多线程并发迭代冲突崩溃"""
+        self.all_funds_dict.clear()
+        self.all_funds_dict.update(new_dict)
+        self.all_funds_code_to_name.clear()
+        self.all_funds_code_to_name.update(new_code_to_name)
+        self.fund_search_list.clear()
+        self.fund_search_list.extend(new_search_list)
+        print(f"[Registry] 场外字典后台网络静默更新完成，共 {len(new_search_list)} 条记录")
+
 
     def find_code_by_name(self, name_query):
         for name, code in self.all_funds_dict.items():

@@ -654,6 +654,27 @@ class FundChartDialog(QDialog):
         self.indicator_combo.setStyleSheet(combo_style)
         self.indicator_combo.currentIndexChanged.connect(self.handle_indicator_changed)
         ctrl_bar_layout.addWidget(self.indicator_combo)
+        
+        # 估值百分位温度带的计算窗口选项
+        self.val_window_label = QLabel("计算区间:")
+        self.val_window_label.setStyleSheet(f"color: {text_color}; font-size: 12px; margin-left: 15px;")
+        
+        self.val_window_combo = QComboBox()
+        self.val_window_combo.setFixedWidth(100)
+        self.val_window_combo.addItems([
+            "近1年",
+            "近3年",
+            "近5年",
+            "成立以来"
+        ])
+        self.val_window_combo.setStyleSheet(combo_style)
+        # 默认使用“成立以来”
+        self.val_window_combo.setCurrentIndex(3)
+        self.val_window_combo.currentIndexChanged.connect(self.handle_val_window_changed)
+        
+        ctrl_bar_layout.addWidget(self.val_window_label)
+        ctrl_bar_layout.addWidget(self.val_window_combo)
+        
         ctrl_bar_layout.addStretch()
         layout.addLayout(ctrl_bar_layout)
         
@@ -798,6 +819,42 @@ class FundChartDialog(QDialog):
         if markers:
             markers[0].setVisible(False)
             
+    def recalculate_val_pcts(self):
+        """根据当前选定的估值计算窗口，在完整历史序列上重新计算百分位温度"""
+        navs = self.all_navs
+        if not navs:
+            self.all_val_pcts = []
+            return
+            
+        # 获取当前选定的计算窗口类型（如果控件还没创建，默认采用 "成立以来"）
+        window_idx = 3 # 默认“成立以来”
+        if hasattr(self, 'val_window_combo'):
+            window_idx = self.val_window_combo.currentIndex()
+            
+        # 对应滚动天数
+        if window_idx == 0:     # 近1年
+            limit = 252
+        elif window_idx == 1:   # 近3年
+            limit = 756
+        elif window_idx == 2:   # 近5年
+            limit = 1260
+        else:                   # 成立以来
+            limit = 0
+            
+        self.all_val_pcts = []
+        for i in range(len(navs)):
+            if limit == 0:
+                # 成立以来：从最开始的一天到当天
+                window = navs[0 : i + 1]
+            else:
+                window = navs[max(0, i - (limit - 1)) : i + 1]
+                
+            val = navs[i]
+            less = sum(1 for x in window if x < val)
+            equal = sum(1 for x in window if x == val)
+            pct = (less + 0.5 * equal) / len(window) * 100.0
+            self.all_val_pcts.append(pct)
+            
     def calculate_all_indicators(self):
         """核心指标数学计算引擎（在完整正序价格序列上运行）"""
         navs = self.all_navs
@@ -815,15 +872,8 @@ class FundChartDialog(QDialog):
         self.all_ma10 = calc_ma(10)
         self.all_ma20 = calc_ma(20)
         
-        # 2. 估值百分位温度带（252个交易日窗口）
-        self.all_val_pcts = []
-        for i in range(len(navs)):
-            window = navs[max(0, i - 251) : i + 1]
-            val = navs[i]
-            less = sum(1 for x in window if x < val)
-            equal = sum(1 for x in window if x == val)
-            pct = (less + 0.5 * equal) / len(window) * 100.0
-            self.all_val_pcts.append(pct)
+        # 2. 估值百分位温度带计算
+        self.recalculate_val_pcts()
             
         # 3. MACD 强弱指标 (12, 26, 9)
         def get_ema(data, period):
@@ -966,6 +1016,7 @@ class FundChartDialog(QDialog):
         else:
             start_idx = max(0, len(self.all_navs) - days)
             
+        self.current_start_idx = start_idx
         self.current_navs = self.all_navs[start_idx:]
         self.current_dates = self.all_dates[start_idx:]
         
@@ -1072,9 +1123,42 @@ class FundChartDialog(QDialog):
         """下拉框指标选择切换槽函数"""
         indicator_types = ["temperature", "macd", "kdj", "rsi"]
         self.bottom_chart_view.indicator_type = indicator_types[index]
+        
+        # 动态控制估值计算窗口选择控件的可见性
+        is_temp = (index == 0)
+        if hasattr(self, 'val_window_label'):
+            self.val_window_label.setVisible(is_temp)
+        if hasattr(self, 'val_window_combo'):
+            self.val_window_combo.setVisible(is_temp)
+            
         self.update_secondary_chart()
         
         # 强制联动 X 轴，同步当前可视范围内的 Y 自适应高度
+        self.bottom_axis_x.blockSignals(True)
+        self.bottom_axis_x.setRange(self.top_axis_x.min(), self.top_axis_x.max())
+        self.bottom_axis_x.blockSignals(False)
+        self.handle_bottom_x_range_changed(self.top_axis_x.min(), self.top_axis_x.max())
+        
+    def handle_val_window_changed(self, index):
+        """估值百分位计算窗口切换槽函数"""
+        if not hasattr(self, 'current_start_idx'):
+            return
+            
+        # 1. 重新在完整历史数据上计算百分位
+        self.recalculate_val_pcts()
+        
+        # 2. 对当前选定的时间展示范围进行切片
+        self.current_val_pcts = self.all_val_pcts[self.current_start_idx:]
+        
+        # 3. 更新副图的数据缓存
+        self.bottom_chart_view.update_indicators(
+            current_val_pcts=self.current_val_pcts
+        )
+        
+        # 4. 刷新副图
+        self.update_secondary_chart()
+        
+        # 5. 强制联动 X 轴，同步当前可视范围内的 Y 自适应高度
         self.bottom_axis_x.blockSignals(True)
         self.bottom_axis_x.setRange(self.top_axis_x.min(), self.top_axis_x.max())
         self.bottom_axis_x.blockSignals(False)

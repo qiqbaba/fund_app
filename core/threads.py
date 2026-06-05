@@ -6,6 +6,7 @@ import random
 import requests
 from PySide6.QtCore import QThread, Signal
 from core.db_manager import FundHistoryDB
+from core.data_gateway import FundDataGateway
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
@@ -122,7 +123,7 @@ class FundDataFetcher(QThread):
         self.code_to_name_dict = code_to_name_dict
         self.db = db if db else FundHistoryDB()  # 如果没传数据库实例就创建新的
 
-    def fetch_single(self, code, session):
+    def fetch_single(self, code, session, gateway):
         if self.isInterruptionRequested(): return None
         
         saved_name = self.config.get("funds_info", {}).get(code, {}).get("name", "")
@@ -199,63 +200,82 @@ class FundDataFetcher(QThread):
         else:
             page_size_to_fetch = 2000
 
-        # 实例化抽象数据网关层
-        from core.data_gateway import FundDataGateway
-        history_source = self.config.get("history_source", "Auto")
-        valuation_source = self.config.get("valuation_source", "Auto")
-        gateway = FundDataGateway(session, history_source=history_source, valuation_source=valuation_source)
+        # 使用传入的共享抽象数据网关层
 
-        # ================= 2. 如果本地没有历史数据，或者需要更新（与今天日期不一致），则通过网关获取 =================
+        # ================= 2 & 3. 通过网关获取历史数据与实时估值数据（引入并发优化） =================
+        his_res = None
+        gz_res = None
+
         if not history_success or need_api_update:
+            # 需要更新/获取历史数据，且也需要实时估值，两者并行获取以优化性能
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as inner:
+                f_his = inner.submit(gateway.fetch_history, code, page_size=page_size_to_fetch)
+                f_gz = inner.submit(gateway.fetch_valuation, code)
+                
+                try:
+                    his_res = f_his.result()
+                except Exception:
+                    pass
+                try:
+                    gz_res = f_gz.result()
+                except Exception:
+                    pass
+        else:
+            # 不需要更新历史数据，仅需要获取实时估值数据
             try:
-                his_res = gateway.fetch_history(code, page_size=page_size_to_fetch)
-                if his_res:
-                    navs = his_res['navs']
-                    dates = his_res['dates']
-                    latest_item = his_res['latest_item']
-                    latest_date = his_res['jzrq']
-                    
-                    # 如果是增量更新并且本地已有历史数据，进行拼接和去重
-                    if page_size_to_fetch < 2000 and history_data:
-                        old_dates = history_data.get('dates') or []
-                        old_navs = history_data.get('navs') or []
-                        
-                        # 合并并以日期为键去重
-                        combined = {}
-                        for d, n in zip(old_dates, old_navs):
-                            combined[d] = n
-                        for d, n in zip(dates, navs):
-                            combined[d] = n
-                        
-                        # 重新按日期降序排列
-                        sorted_items = sorted(combined.items(), key=lambda x: x[0], reverse=True)
-                        merged_dates = [item[0] for item in sorted_items]
-                        merged_navs = [item[1] for item in sorted_items]
-                        
-                        history_data = {'jzrq': latest_date, 'navs': merged_navs, 'dates': merged_dates}
-                    else:
-                        # 首次抓取或全量更新
-                        history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
-                    
-                    data['new_history'] = history_data
-                    self.history_cache[code] = history_data
-                    
-                    # 保存合并/全量后的数据到本地数据库
-                    self.db.save_history(code, latest_date, history_data['navs'], history_data['dates'])
-                    
-                    data['jzrq'] = latest_date
-                    data['dwjz'] = str(history_data['navs'][0])
-                    data['gsz'] = str(history_data['navs'][0])
-                    data['gszzl'] = latest_item.get("JZZZL", "0.00") if latest_item else "0.00"
-                    data['gztime'] = f"{latest_date} (实际净值) [{his_res['source']}]"
-                    history_success = True
+                gz_res = gateway.fetch_valuation(code)
             except Exception:
                 pass
 
-        # ================= 3. 尝试获取实时估值数据 (使用抽象数据网关，支持多源毫秒级平滑降级) =================
-        try:
-            gz_res = gateway.fetch_valuation(code)
-            if gz_res:
+        # 处理历史数据结果
+        if his_res:
+            try:
+                navs = his_res['navs']
+                dates = his_res['dates']
+                latest_item = his_res['latest_item']
+                latest_date = his_res['jzrq']
+                
+                # 如果是增量更新并且本地已有历史数据，进行拼接和去重
+                if page_size_to_fetch < 2000 and history_data:
+                    old_dates = history_data.get('dates') or []
+                    old_navs = history_data.get('navs') or []
+                    
+                    # 合并并以日期为键去重
+                    combined = {}
+                    for d, n in zip(old_dates, old_navs):
+                        combined[d] = n
+                    for d, n in zip(dates, navs):
+                        combined[d] = n
+                    
+                    # 重新按日期降序排列
+                    sorted_items = sorted(combined.items(), key=lambda x: x[0], reverse=True)
+                    merged_dates = [item[0] for item in sorted_items]
+                    merged_navs = [item[1] for item in sorted_items]
+                    
+                    history_data = {'jzrq': latest_date, 'navs': merged_navs, 'dates': merged_dates}
+                else:
+                    # 首次抓取或全量更新
+                    history_data = {'jzrq': latest_date, 'navs': navs, 'dates': dates}
+                
+                data['new_history'] = history_data
+                self.history_cache[code] = history_data
+                
+                # 保存合并/全量后的数据到本地数据库
+                self.db.save_history(code, latest_date, history_data['navs'], history_data['dates'])
+                
+                data['jzrq'] = latest_date
+                data['dwjz'] = str(history_data['navs'][0])
+                data['gsz'] = str(history_data['navs'][0])
+                data['gszzl'] = latest_item.get("JZZZL", "0.00") if latest_item else "0.00"
+                data['gztime'] = f"{latest_date} (实际净值) [{his_res['source']}]"
+                history_success = True
+            except Exception:
+                pass
+
+        # 处理估值数据结果
+        if gz_res:
+            try:
                 if gz_res.get('name'):
                     data['name'] = gz_res.get('name')
                 
@@ -265,8 +285,8 @@ class FundDataFetcher(QThread):
                     data['gsz'] = gz_res.get('gsz')
                     data['gszzl'] = gz_res.get('gszzl')
                     data['gztime'] = f"{gz_res.get('gztime')} [{gz_res['source']}]"
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         if not history_success and 'gztime' not in data:
             return {'error': True, 'code': code, 'msg': "暂无数据"}
@@ -307,11 +327,19 @@ class FundDataFetcher(QThread):
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
         })
 
+        # 提前构造好共享网关实例，避免多线程热路径中重复创建
+        history_source = self.config.get("history_source", "Auto")
+        valuation_source = self.config.get("valuation_source", "Auto")
+        gateway = FundDataGateway(session, history_source=history_source, valuation_source=valuation_source)
+
         import concurrent.futures
         
-        # 使用最大10个线程进行并发请求
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_code = {executor.submit(self.fetch_single, code, session): code for code in self.fund_codes}
+        # 根据基金数量动态调整并发线程数。作为网络IO密集型任务，可适当调高线程上限，但为防止高频并发被天天基金封IP限制，上限控制在30
+        num_funds = len(self.fund_codes)
+        max_workers = min(max(num_funds, 1), 30)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_code = {executor.submit(self.fetch_single, code, session, gateway): code for code in self.fund_codes}
             
             for future in concurrent.futures.as_completed(future_to_code):
                 if self.isInterruptionRequested():
@@ -344,6 +372,13 @@ class ValuationFetcher(QThread):
         super().__init__()
         self.all_funds_dict = all_funds_dict
         self.shared_sector_map = shared_sector_map if shared_sector_map is not None else {}
+        
+        # 预构建的基金分类子集，在数据加载完成后一次性初始化
+        self._liangjie_funds = None
+        self._etf_otc_funds = None
+        self._lof_index_otc_funds = None
+        self._any_otc_funds = None
+        self._any_etf_funds = None
 
     def find_fund_for_index(self, index_code, index_name, used_fund_codes=None):
         """尝试为指数找到一个对应的场外联接基金代码，优先联接基金。
@@ -373,6 +408,29 @@ class ValuationFetcher(QThread):
         if used_fund_codes is None:
             used_fund_codes = set()
 
+        # 当 all_funds_dict 加载完成后，如果尚未预分类，则进行一次性过滤和分类列表构建
+        if self._liangjie_funds is None and self.all_funds_dict:
+            self._liangjie_funds = []
+            self._etf_otc_funds = []
+            self._lof_index_otc_funds = []
+            self._any_otc_funds = []
+            self._any_etf_funds = []
+            
+            for name, code in self.all_funds_dict.items():
+                is_otc = code.startswith('0') or code.startswith('2') or code.startswith('3') or code.startswith('16') or code.startswith('50')
+                is_etf = "ETF" in name
+                
+                if "联接" in name:
+                    self._liangjie_funds.append((name, code))
+                if is_etf and is_otc:
+                    self._etf_otc_funds.append((name, code))
+                if ("LOF" in name or "指数" in name) and is_otc:
+                    self._lof_index_otc_funds.append((name, code))
+                if is_otc:
+                    self._any_otc_funds.append((name, code))
+                if is_etf:
+                    self._any_etf_funds.append((name, code))
+
         # 清理指数名称，生成搜索关键词
         # 移除“指”、“指数”、“成指”、“价格”、“全收益”等后缀，保留核心名称
         clean_name = index_name.replace("指数", "").replace("CS", "").replace("TMT50", "TMT")
@@ -395,44 +453,45 @@ class ValuationFetcher(QThread):
         if "中创" in clean_name:
             search_keys.append("中创400")
 
-        def is_otc_fund(code):
-            """判断是否为场外基金代码（非场内ETF）"""
-            return code.startswith('0') or code.startswith('2') or code.startswith('3') or code.startswith('16') or code.startswith('50')
-
         def is_available(code, fund_name):
             """检查该基金代码是否尚未被其他指数占用，且排除后端收费基金"""
             return code not in used_fund_codes and "后端" not in fund_name
 
         # 第一优先级：联接基金（一定是场外，数据接口一定支持）
-        for key in search_keys:
-            for name, code in self.all_funds_dict.items():
-                if key in name and "联接" in name and is_available(code, name):
-                    return code
+        if self._liangjie_funds:
+            for key in search_keys:
+                for name, code in self._liangjie_funds:
+                    if key in name and is_available(code, name):
+                        return code
 
         # 第二优先级：场外ETF基金
-        for key in search_keys:
-            for name, code in self.all_funds_dict.items():
-                if key in name and "ETF" in name and is_otc_fund(code) and is_available(code, name):
-                    return code
+        if self._etf_otc_funds:
+            for key in search_keys:
+                for name, code in self._etf_otc_funds:
+                    if key in name and is_available(code, name):
+                        return code
 
         # 第三优先级：LOF基金或指数基金（场外）
-        for key in search_keys:
-            for name, code in self.all_funds_dict.items():
-                if key in name and ("LOF" in name or "指数" in name) and is_otc_fund(code) and is_available(code, name):
-                    return code
+        if self._lof_index_otc_funds:
+            for key in search_keys:
+                for name, code in self._lof_index_otc_funds:
+                    if key in name and is_available(code, name):
+                        return code
 
         # 第四优先级：任何包含该关键词的场外基金（比如直接叫xx股票）
-        for key in search_keys:
-            if key == index_code: continue # 纯数字代码不作为宽泛匹配
-            for name, code in self.all_funds_dict.items():
-                if key in name and is_otc_fund(code) and is_available(code, name):
-                    return code
+        if self._any_otc_funds:
+            for key in search_keys:
+                if key == index_code: continue # 纯数字代码不作为宽泛匹配
+                for name, code in self._any_otc_funds:
+                    if key in name and is_available(code, name):
+                        return code
 
         # 第五优先级：任何ETF（包括场内，可能查不到实时估值但能查历史净值）
-        for key in search_keys:
-            for name, code in self.all_funds_dict.items():
-                if key in name and "ETF" in name and is_available(code, name):
-                    return code
+        if self._any_etf_funds:
+            for key in search_keys:
+                for name, code in self._any_etf_funds:
+                    if key in name and is_available(code, name):
+                        return code
                     
         return index_code  # 没找到就用指数代码兜底
 
@@ -1038,3 +1097,33 @@ class BatchOptimalStrategyFinder(QThread):
             success_count += 1
             
         self.result_signal.emit({'success_count': success_count, 'total_funds': total_funds})
+
+class FundRegistryLoader(QThread):
+    """
+    后台线程：静默在后台读取并遍历解析 4 万条全市场基金字典数据，防止阻塞主线程启动。
+    """
+    registry_loaded_signal = Signal(dict, dict, list) # loaded_dict, loaded_code_to_name, loaded_search_list
+
+    def __init__(self):
+        super().__init__()
+
+    def run(self):
+        from core.utils import load_funds_registry_from_cache
+        cached_data, _ = load_funds_registry_from_cache()
+        
+        loaded_dict = {}
+        loaded_code_to_name = {}
+        loaded_search_list = []
+        
+        if cached_data:
+            for item in cached_data:
+                if self.isInterruptionRequested():
+                    return
+                # item 格式为: (代码, 拼音缩写, 名称, 类型, 全拼音)
+                loaded_dict[item[2]] = item[0]
+                loaded_code_to_name[item[0]] = item[2]
+                loaded_search_list.append((item[0], item[1], item[2], item[3], item[4]))
+                
+        if not self.isInterruptionRequested():
+            self.registry_loaded_signal.emit(loaded_dict, loaded_code_to_name, loaded_search_list)
+

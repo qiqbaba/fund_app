@@ -161,7 +161,7 @@ def save_funds_registry_to_cache(data, last_modified_header=None, content_length
         # 使用临时文件写入并重命名，防止进程崩溃导致文件损坏
         temp_path = cache_path + ".tmp"
         with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False)
         if os.path.exists(cache_path):
             os.remove(cache_path)
         os.rename(temp_path, cache_path)
