@@ -1,7 +1,27 @@
-# Python 编译缓存
+# Python 编译缓存与运行目录
 __pycache__/
 *.pyc
-*.md
+
+# 虚拟环境 (Virtual Environments)
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# 编辑器与IDE配置 (Editor & IDE settings)
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# 临时和草稿目录 (Scratch & Temp folders)
+scratch/
 
 # 旧的临时数据文件（代码未引用）
 high_pe.json
@@ -9,7 +29,10 @@ history_pe.json
 index_funds.json
 output.json
 
-# 本地历史数据库
+# 本地数据与缓存（包含敏感或体积过大的数据）
+my_funds.json
+funds_registry_cache.json
 fund_history.db
 *.db-wal
 *.db-shm
+
