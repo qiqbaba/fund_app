@@ -1,3 +1,5 @@
+## 为了兼容Android，用flutter重构：[FlFund](https://github.com/qiqbaba/FlFund)，本项目停更。
+
 # 📊 FundApp - 场外基金深度监控与智能量化回测分析系统
 
 `FundApp` 是一款基于 Python 与 PySide6 (Qt6) 开发的**高可用、低延迟、现代化场外基金监控与量化回测系统**。项目采用微软 Fluent Design（流畅设计）风格界面，旨在为个人投资者与量化交易爱好者提供全方位的基金筛选、实时估值雷达、周期板块监控、以及基于**遗传算法（Genetic Algorithm）**的网格回撤买入回测寻优工具。
